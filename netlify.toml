@@ -1,6 +1,6 @@
 [build]
   command = "npm install"
-  publish = "."  # this must not point to "dist" if you don't use a build output
+  publish = "."  # root
 
 [functions]
   directory = "api"

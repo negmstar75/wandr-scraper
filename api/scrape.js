@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { getMockDestinations, generateSlug } from '../../scrapers/mockLonelyPlanet.js';
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY);
 
 const verifyRequest = (req: any): boolean => {
   const incomingSecret = req.headers.authorization?.replace('Bearer ', '');

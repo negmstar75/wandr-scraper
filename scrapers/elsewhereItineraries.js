@@ -3,7 +3,7 @@ import * as cheerio from 'cheerio';
 import { createClient } from '@supabase/supabase-js';
 import slugify from 'slugify';
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY);
 
 const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East' },

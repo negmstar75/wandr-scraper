@@ -3,7 +3,7 @@ import * as cheerio from 'cheerio';
 import { createClient } from '@supabase/supabase-js';
 import slugify from 'slugify';
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East' },
@@ -11,7 +11,7 @@ const countryList = [
   { slug: 'italy', country: 'Italy', region: 'Europe' },
 ];
 
-function generateSlug(country: string, title: string) {
+function generateSlug(country, title) {
   return `${slugify(country, { lower: true })}/${slugify(title, { lower: true })}`;
 }
 
@@ -22,6 +22,7 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
+
     const title = $('h1').first().text().trim() || `Trip to ${country}`;
     const itineraryBlocks = $('h3:contains("Day"), h4:contains("Day"), p');
 
@@ -43,7 +44,9 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
       return;
     }
 
-    const image = $('meta[property="og:image"]').attr('content') || `https://source.unsplash.com/featured/?${country},travel`;
+    const image = $('meta[property="og:image"]').attr('content') || 
+      `https://source.unsplash.com/featured/?${country},travel`;
+
     const slug = generateSlug(country, title);
 
     await supabase.from('travel_itineraries').upsert([{

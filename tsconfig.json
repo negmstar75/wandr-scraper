@@ -7,7 +7,6 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "strict": true,
-    "outDir": "dist",
     "resolveJsonModule": true,
     "isolatedModules": true
   },

@@ -1,9 +1,9 @@
-[functions]
-  directory = "api"
-
 [build]
   command = "npm install"
   publish = "."
+
+[functions]
+  directory = "api"
 
 [[redirects]]
   from = "/api/*"

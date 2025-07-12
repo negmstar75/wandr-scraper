@@ -16,7 +16,7 @@ export async function handler(req) {
   if (!verifyRequest(req)) {
     return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
-
+console.log(process.env.CRON_SECRET
   const slugParam = req.queryStringParameters?.slug || '';
   const mockData = getMockDestinations();
   let inserted = 0;

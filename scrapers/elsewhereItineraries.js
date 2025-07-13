@@ -1,7 +1,8 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { createClient } from '@supabase/supabase-js';
-import slugify from 'slugify';
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { createClient } = require('@supabase/supabase-js');
+const slugify = require('slugify');
+require('dotenv').config();
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -22,7 +23,6 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
-
     const title = $('h1').first().text().trim() || `Trip to ${country}`;
     const itineraryBlocks = $('h3:contains("Day"), h4:contains("Day"), p');
 
@@ -44,23 +44,25 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
       return;
     }
 
-    const image = $('meta[property="og:image"]').attr('content') || 
+    const image = $('meta[property="og:image"]').attr('content') ||
       `https://source.unsplash.com/featured/?${country},travel`;
 
     const slug = generateSlug(country, title);
 
-    await supabase.from('travel_itineraries').upsert([{
-      slug,
-      title,
-      region,
-      country,
-      theme: 'Classic',
-      days,
-      places: [],
-      markdown,
-      source: 'elsewhere',
-      image
-    }]);
+    await supabase.from('travel_itineraries').upsert([
+      {
+        slug,
+        title,
+        region,
+        country,
+        theme: 'Classic',
+        days,
+        places: [],
+        markdown,
+        source: 'elsewhere',
+        image,
+      },
+    ]);
 
     console.log(`✅ Inserted ${title}`);
   } catch (err) {
@@ -68,10 +70,13 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
   }
 }
 
-export async function runElsewhereScraper() {
+async function runElsewhereScraper() {
   for (const country of countryList) {
     await scrapeItinerary(country);
   }
-
   console.log('🎉 Elsewhere scraping done');
 }
+
+module.exports = {
+  runElsewhereScraper,
+};

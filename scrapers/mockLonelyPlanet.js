@@ -1,37 +1,28 @@
-// scrapers/mockLonelyPlanet.js
-
-export function getMockDestinations() {
+function getMockDestinations() {
   return [
     {
-      city: 'Tokyo',
-      country: 'Japan',
-      title: 'Tokyo Highlights',
-      description: 'Explore Japan’s capital city from shrines to sushi.',
-      image: 'https://source.unsplash.com/featured/?tokyo',
-    },
-    {
+      title: 'Best of Jordan',
       city: 'Amman',
       country: 'Jordan',
-      title: 'Historic Jordan',
-      description: 'Experience Petra, Wadi Rum, and the Dead Sea.',
-      image: 'https://source.unsplash.com/featured/?jordan',
+      image: 'https://source.unsplash.com/featured/?Jordan',
+      description: '7-day highlights of Jordan including Petra and Wadi Rum',
     },
     {
-      city: 'Rome',
-      country: 'Italy',
-      title: 'Rome Essentials',
-      description: 'Colosseum, Vatican, and ancient streets.',
-      image: 'https://source.unsplash.com/featured/?rome',
-    }
+      title: 'Explore Japan',
+      city: 'Tokyo',
+      country: 'Japan',
+      image: 'https://source.unsplash.com/featured/?Japan',
+      description: 'Modern cities to ancient temples',
+    },
   ];
 }
 
-export function generateSlug({ city, country, name }) {
-  const slugify = (str) =>
-    str
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)+/g, '');
-
-  return `${slugify(country)}/${slugify(city)}-${slugify(name)}`;
+function generateSlug({ city, country, name }) {
+  const slugify = require('slugify');
+  return `${slugify(country, { lower: true })}/${slugify(name, { lower: true })}`;
 }
+
+module.exports = {
+  getMockDestinations,
+  generateSlug,
+};

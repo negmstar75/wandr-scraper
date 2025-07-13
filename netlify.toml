@@ -1,9 +1,9 @@
+[functions]
+  directory = "netlify/functions"
+
 [build]
   command = "npm install"
-  publish = "."  # root
-
-[functions]
-  directory = "api"
+  publish = "."
 
 [[redirects]]
   from = "/api/*"

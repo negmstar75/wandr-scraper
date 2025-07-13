@@ -1,3 +1,6 @@
+// scrapers/mockLonelyPlanet.js
+const slugify = require('slugify');
+
 function getMockDestinations() {
   return [
     {
@@ -18,7 +21,6 @@ function getMockDestinations() {
 }
 
 function generateSlug({ city, country, name }) {
-  const slugify = require('slugify');
   return `${slugify(country, { lower: true })}/${slugify(name, { lower: true })}`;
 }
 

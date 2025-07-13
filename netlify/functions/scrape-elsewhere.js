@@ -1,7 +1,7 @@
 // netlify/functions/scrape-elsewhere.js
 const { runElsewhereScraper } = require('../../scrapers/elsewhereItineraries');
 
-exports.handler = async (event) => {
+exports.handler = async function (event, context) {
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -11,7 +11,6 @@ exports.handler = async (event) => {
 
   try {
     await runElsewhereScraper();
-
     return {
       statusCode: 200,
       body: JSON.stringify({ status: 'ok', source: 'elsewhere' }),

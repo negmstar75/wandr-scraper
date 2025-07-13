@@ -4,9 +4,12 @@ require('dotenv').config();
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-exports.handler = async function (event, context) {
+exports.handler = async function (event) {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) };
+    return {
+      statusCode: 405,
+      body: JSON.stringify({ error: 'Method Not Allowed' }),
+    };
   }
 
   const slugParam = event.queryStringParameters?.slug || '';
@@ -25,9 +28,21 @@ exports.handler = async function (event, context) {
 
     if (!existing) {
       const { error } = await supabase.from('destinations').insert([
-        { ...dest, slug, name: dest.title, images: [dest.image] },
+        {
+          ...dest,
+          slug,
+          name: dest.title,
+          images: [dest.image],
+        },
       ]);
-      if (error) return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+
+      if (error) {
+        return {
+          statusCode: 500,
+          body: JSON.stringify({ error: error.message }),
+        };
+      }
+
       inserted++;
     }
   }

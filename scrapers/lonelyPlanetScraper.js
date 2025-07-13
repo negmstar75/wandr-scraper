@@ -23,19 +23,24 @@ function generateLink(country, city) {
 
 // 🧠 AI Overview Generator
 async function generateOverview(city, country, text, attractionsList) {
-  const systemPrompt = `You are a travel expert. Write a short but vivid and engaging summary for a travel destination, and end with a list of must-see attractions.`;
+  try {
+    const systemPrompt = `You are a travel expert. Write a short but vivid and engaging summary for a travel destination, and end with a list of must-see attractions.`;
 
-  const message = `${city}, ${country}\n\n${text}\n\nMust-see: ${attractionsList.join(', ')}`;
+    const message = `${city}, ${country}\n\n${text}\n\nMust-see: ${attractionsList.join(', ')}`;
 
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: message },
-    ],
-  });
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message },
+      ],
+    });
 
-  return res.choices?.[0]?.message?.content?.trim() || '';
+    return res.choices?.[0]?.message?.content?.trim() || '';
+  } catch (error) {
+    console.error(`❌ OpenAI error: ${error.message}`);
+    return '';
+  }
 }
 
 // 🔧 Scraper per destination
@@ -45,69 +50,74 @@ async function scrapeDestination({ city, country, continent }) {
   const slug = `${countrySlug}/${citySlug}`;
   const url = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
 
-  console.log(`🌍 Scraping: ${url}`);
+  console.log(`🌍 Scraping: ${city}, ${country}`);
+  console.log(`🔗 URL: ${url}`);
+
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
 
-    // ✅ Overview text
     const introText = $('meta[name="description"]').attr('content') || '';
-
-    // ✅ Must-see attractions
     const attractions = [];
-    $('h2:contains("Must-see attractions")').next().find('a').each((_, el) => {
-      const name = $(el).text().trim();
-      if (name && !attractions.includes(name)) attractions.push(name);
-    });
 
-    // ✅ Planning tools (Best time, How to get around, etc.)
+    $('h2:contains("Must-see attractions")')
+      .next()
+      .find('a')
+      .each((_, el) => {
+        const name = $(el).text().trim();
+        if (name && !attractions.includes(name)) attractions.push(name);
+      });
+
+    // Planning tools
     let planning_md = '';
-    $('h2:contains("Planning Tools")').nextUntil('h2').each((_, el) => {
-      const tag = $(el).get(0).tagName;
-      const text = $(el).text().trim();
-      if (tag === 'h3') planning_md += `\n\n### ${text}\n`;
-      else if (tag === 'p') planning_md += `${text}\n`;
-    });
+    $('h2:contains("Planning Tools")')
+      .nextUntil('h2')
+      .each((_, el) => {
+        const tag = $(el).get(0).tagName;
+        const text = $(el).text().trim();
+        if (tag === 'h3') planning_md += `\n\n### ${text}\n`;
+        else if (tag === 'p') planning_md += `${text}\n`;
+      });
 
-    // ✅ Things to do (optional section)
+    // Things to do
     let things_md = '';
-    $('h2:contains("Things to do")').nextUntil('h2').each((_, el) => {
-      const tag = $(el).get(0).tagName;
-      const text = $(el).text().trim();
-      if (tag === 'h3') things_md += `\n\n### ${text}\n`;
-      else if (tag === 'p') things_md += `${text}\n`;
-    });
+    $('h2:contains("Things to do")')
+      .nextUntil('h2')
+      .each((_, el) => {
+        const tag = $(el).get(0).tagName;
+        const text = $(el).text().trim();
+        if (tag === 'h3') things_md += `\n\n### ${text}\n`;
+        else if (tag === 'p') things_md += `${text}\n`;
+      });
 
-    // ✅ AI overview
     const overview_md = await generateOverview(city, country, introText, attractions);
 
-    // ✅ Insert into Supabase
-    const { error } = await supabase.from('destinations').upsert([
-      {
-        slug,
-        title: city,
-        country,
-        city,
-        region: country,
-        continent,
-        link: generateLink(country, city),
-        image: `https://source.unsplash.com/featured/?${city},${country}`,
-        overview_md,
-        itinerary_md: '', // Left for itinerary scraper
-        planning_tools_md: planning_md.trim(),
-        things_to_do_md: things_md.trim(),
-        popular_attractions: attractions,
-        interests: ['culture', 'exploration'],
-        source: 'lp',
-        popularity: Math.floor(Math.random() * 100),
-        ai_markdown: `# ${city}, ${country}\n\n${overview_md}\n\n## Planning Tools\n${planning_md}`,
-      },
-    ]);
+    const insertPayload = {
+      slug,
+      title: city,
+      country,
+      city,
+      region: country,
+      continent,
+      link: generateLink(country, city),
+      image: `https://source.unsplash.com/featured/?${city},${country}`,
+      overview_md,
+      itinerary_md: '',
+      planning_tools_md: planning_md.trim(),
+      things_to_do_md: things_md.trim(),
+      popular_attractions: attractions,
+      interests: ['culture', 'exploration'],
+      source: 'lp',
+      popularity: Math.floor(Math.random() * 100),
+      ai_markdown: `# ${city}, ${country}\n\n${overview_md}\n\n## Planning Tools\n${planning_md}`,
+    };
+
+    const { data, error } = await supabase.from('destinations').upsert([insertPayload]);
 
     if (error) {
-      console.error(`❌ Supabase error:`, error.message);
+      console.error(`❌ Supabase insert failed for ${city}:`, error.message);
     } else {
-      console.log(`✅ Saved: ${city}`);
+      console.log(`✅ Saved to Supabase: ${city}`, { id: data?.[0]?.id });
     }
   } catch (err) {
     console.error(`❌ Failed to scrape ${city}: ${err.message}`);
@@ -116,6 +126,7 @@ async function scrapeDestination({ city, country, continent }) {
 
 // 🏁 Runner
 async function runLonelyPlanetScraper() {
+  console.log('🚀 Starting Lonely Planet scraper...');
   for (const destination of destinationList) {
     await scrapeDestination(destination);
   }

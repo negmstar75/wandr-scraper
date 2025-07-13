@@ -1,7 +1,0 @@
-{
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/scrape-elsewhere", "destination": "/api/scrape-elsewhere.js" },
-    { "source": "/scrape", "destination": "/api/scrape.js" }
-  ]
-}

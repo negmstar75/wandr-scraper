@@ -4,8 +4,16 @@ const { createClient } = require('@supabase/supabase-js');
 const slugify = require('slugify');
 const { OpenAI } = require('openai');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+require('dotenv').config();
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East', continent: 'Asia' },
@@ -26,44 +34,52 @@ async function scrapeItinerary({ slug: countrySlug, country, region, continent }
     const $ = cheerio.load(res.data);
 
     const title = $('h1').first().text().trim() || `Trip to ${country}`;
-    const itineraryBlocks = $('h3:contains("Day"), h4:contains("Day"), p');
 
-    let markdown = '';
-    let days = 0;
-
-    itineraryBlocks.each((_, el) => {
+    // 🧠 Extract deeper itinerary sections
+    let fullText = '';
+    $('section, article, div').each((_, el) => {
       const text = $(el).text().trim();
-      if (/^day\s*\d+/i.test(text)) {
-        markdown += `\n\n### ${text}\n`;
-        days++;
-      } else if (el.tagName === 'p' && text.length > 30) {
-        markdown += `${text}\n`;
+      if (text.length > 100) {
+        fullText += text + '\n\n';
       }
     });
 
-    if (days === 0 || days > 10) {
-      console.warn(`⏭️ Skipping ${country} – Invalid itinerary`);
+    fullText = fullText.replace(/\s+/g, ' ').trim();
+
+    if (fullText.length < 400) {
+      console.warn(`⏭️ Skipping ${country} – not enough content`);
       return;
     }
 
-    const image = $('meta[property="og:image"]').attr('content') || `https://source.unsplash.com/featured/?${country},travel`;
-    const slug = generateSlug(country, title);
-
-    // 🌟 Use OpenAI to create overview summary
-    const aiResponse = await openai.chat.completions.create({
+    // ✨ OpenAI to summarize
+    const aiSummary = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [
-        { role: 'system', content: 'Summarize this travel itinerary in 2-3 engaging sentences for a travel app.' },
-        { role: 'user', content: markdown },
+        {
+          role: 'system',
+          content: `You're a travel copywriter. Given full itinerary text, summarize it in a rich 3-5 sentence overview.`,
+        },
+        { role: 'user', content: fullText },
       ],
     });
 
-    const overview_md = aiResponse.choices?.[0]?.message?.content?.trim() || '';
+    const overview_md = aiSummary.choices?.[0]?.message?.content?.trim() || '';
 
-    // 🧠 Optionally: generate placeholder tags
-    const interests = ['culture', 'food', 'history']; // could also use AI or user-defined
-    const popularity = Math.floor(Math.random() * 100); // dummy score
-    const attractions = []; // for now, empty — later we can extract
+    const aiItinerary = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: `You're formatting a multi-day itinerary for a travel app. Convert the input into Markdown with headings for each day.`,
+        },
+        { role: 'user', content: fullText },
+      ],
+    });
+
+    const itinerary_md = aiItinerary.choices?.[0]?.message?.content?.trim() || '';
+
+    const image = $('meta[property="og:image"]').attr('content') || `https://source.unsplash.com/featured/?${country},travel`;
+    const slug = generateSlug(country, title);
 
     await supabase.from('travel_itineraries').upsert([
       {
@@ -73,24 +89,23 @@ async function scrapeItinerary({ slug: countrySlug, country, region, continent }
         country,
         continent,
         theme: 'Classic',
-        days,
-        places: [],
-        markdown,                // raw itinerary content
-        itinerary_md: markdown, // explicitly saving
+        days: 7, // hardcoded fallback
+        markdown: fullText,
+        itinerary_md,
         overview_md,
-        ai_markdown: markdown,
+        ai_markdown: fullText,
         source: 'elsewhere',
         link: url,
         image,
-        interests,
-        popularity,
-        attractions,
+        interests: ['culture', 'adventure'],
+        popularity: Math.floor(Math.random() * 100),
+        attractions: [],
       },
     ]);
 
-    console.log(`✅ Inserted: ${title}`);
+    console.log(`✅ Saved: ${title}`);
   } catch (err) {
-    console.error(`❌ Failed to scrape ${url}: ${err.message}`);
+    console.error(`❌ Error scraping ${url}:`, err.message);
   }
 }
 
@@ -98,8 +113,7 @@ async function runElsewhereScraper() {
   for (const country of countryList) {
     await scrapeItinerary(country);
   }
-
-  console.log('🎉 Done scraping Elsewhere itineraries');
+  console.log('🎉 All done');
 }
 
 module.exports = { runElsewhereScraper };

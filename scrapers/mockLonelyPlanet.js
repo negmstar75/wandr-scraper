@@ -6,8 +6,8 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Basic mock destinations
-function getBaseMockDestinations() {
+// Mock destinations
+function getMockDestinations() {
   return [
     {
       title: 'Best of Jordan',
@@ -28,28 +28,33 @@ function getBaseMockDestinations() {
   ];
 }
 
-// Generate slug
-function generateSlug({ city, country, name }) {
+// Safely generate slug
+function generateSlug({ city = '', country = '', name = '' }) {
   return `${slugify(country, { lower: true })}/${slugify(name, { lower: true })}`;
 }
 
-// Enrich mock data with AI-generated fields
-async function getMockDestinations() {
-  const base = getBaseMockDestinations();
+// Enrich data with AI summary and additional fields
+async function enrichMockDestinations() {
+  const base = getMockDestinations();
   const enriched = [];
 
   for (const dest of base) {
+    if (!dest.title || !dest.country) {
+      console.warn('⚠️ Skipping invalid destination:', dest);
+      continue;
+    }
+
     const text = `${dest.title}\n${dest.description}\nLocated in ${dest.city}, ${dest.country}.`;
 
     let overview_md = '';
     try {
-      const response = await openai.chat.completions.create({
+      const summaryRes = await openai.chat.completions.create({
         model: 'gpt-4',
         messages: [
           {
             role: 'system',
             content:
-              'You are a travel writer. Create a rich and detailed summary for a destination, 3–5 sentences, informative and inspiring.',
+              'You are a travel expert. Generate a rich, engaging 3–5 sentence overview for a travel destination.',
           },
           {
             role: 'user',
@@ -58,21 +63,21 @@ async function getMockDestinations() {
         ],
       });
 
-      overview_md = response.choices?.[0]?.message?.content?.trim() || '';
-    } catch (err) {
-      console.error('❌ OpenAI generation failed:', err.message);
+      overview_md = summaryRes.choices?.[0]?.message?.content?.trim() || '';
+    } catch (error) {
+      console.error(`❌ Failed to generate summary for ${dest.title}:`, error.message);
     }
 
     enriched.push({
       ...dest,
-      slug: generateSlug(dest),
+      slug: generateSlug({ ...dest, name: dest.title }),
       name: dest.title,
       overview_md,
       ai_markdown: `${text}\n\n${overview_md}`,
       popularity: Math.floor(Math.random() * 100),
       interests: ['culture', 'nature'],
       continent: dest.country === 'Japan' ? 'Asia' : 'Middle East',
-      link: '', // Add external URL if available
+      link: '', // can be set later
       itinerary_md: '',
       attractions: [],
     });
@@ -82,6 +87,6 @@ async function getMockDestinations() {
 }
 
 module.exports = {
-  getMockDestinations,
+  getMockDestinations: enrichMockDestinations,
   generateSlug,
 };

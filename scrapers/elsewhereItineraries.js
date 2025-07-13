@@ -1,18 +1,17 @@
 // scrapers/elsewhereItineraries.js
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { createClient } = require('@supabase/supabase-js');
 const slugify = require('slugify');
+const { createClient } = require('@supabase/supabase-js');
 const { OpenAI } = require('openai');
+
+require('dotenv').config();
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
 
 const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East' },
@@ -52,23 +51,16 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
       return;
     }
 
-    // Generate AI summary
+    // 🧠 Generate OpenAI summary
     const aiResponse = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [
-        {
-          role: 'system',
-          content: 'Summarize the travel itinerary in a short, engaging overview paragraph.',
-        },
-        {
-          role: 'user',
-          content: markdown,
-        },
+        { role: 'system', content: 'Summarize the travel itinerary in an engaging paragraph.' },
+        { role: 'user', content: markdown },
       ],
     });
 
     const overview_md = aiResponse.choices?.[0]?.message?.content?.trim() || '';
-
     const slug = generateSlug(country, title);
     const image = $('meta[property="og:image"]').attr('content') || `https://source.unsplash.com/featured/?${country},travel`;
 
@@ -97,8 +89,7 @@ async function runElsewhereScraper() {
   for (const country of countryList) {
     await scrapeItinerary(country);
   }
-
-  console.log('🎉 Elsewhere scraping done');
+  console.log('🎉 All done');
 }
 
 module.exports = { runElsewhereScraper };

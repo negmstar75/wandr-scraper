@@ -1,10 +1,13 @@
 // scrapers/elsewhereItineraries.js
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { createClient } from '@supabase/supabase-js';
-import slugify from 'slugify';
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { createClient } = require('@supabase/supabase-js');
+const slugify = require('slugify');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East' },
@@ -97,9 +100,11 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
   }
 }
 
-export async function runElsewhereScraper() {
+async function runElsewhereScraper() {
   for (const country of countryList) {
     await scrapeItinerary(country);
   }
   console.log('🎉 Finished scraping Elsewhere itineraries');
 }
+
+module.exports = { runElsewhereScraper };

@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.3",
-    const axios = await import('axios').then(mod => mod.default);
     "cheerio": "1.0.0-rc.12",
     "dotenv": "^10.0.0",
     "slugify": "^1.6.6"

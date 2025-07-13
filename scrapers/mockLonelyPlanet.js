@@ -1,70 +1,87 @@
-const { createClient } = require('@supabase/supabase-js');
-const { getMockDestinations, generateSlug } = require('../../scrapers/mockLonelyPlanet');
+const slugify = require('slugify');
+const { OpenAI } = require('openai');
 require('dotenv').config();
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-exports.handler = async function (event, context) {
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      body: JSON.stringify({ error: 'Method Not Allowed' }),
-    };
-  }
+// Basic mock destinations
+function getBaseMockDestinations() {
+  return [
+    {
+      title: 'Best of Jordan',
+      city: 'Amman',
+      country: 'Jordan',
+      image: 'https://source.unsplash.com/featured/?Jordan',
+      description:
+        'Explore Petra, the Dead Sea, and desert landscapes with rich culture in a 7-day trip.',
+    },
+    {
+      title: 'Explore Japan',
+      city: 'Tokyo',
+      country: 'Japan',
+      image: 'https://source.unsplash.com/featured/?Japan',
+      description:
+        'From the futuristic cityscapes of Tokyo to the serene temples of Kyoto, experience Japan’s contrasts in one journey.',
+    },
+  ];
+}
 
-  try {
-    const slugParam = event.queryStringParameters?.slug || '';
-    
-    // ✅ Await async enriched mock data
-    const mockData = await getMockDestinations();
+// Generate slug
+function generateSlug({ city, country, name }) {
+  return `${slugify(country, { lower: true })}/${slugify(name, { lower: true })}`;
+}
 
-    let inserted = 0;
+// Enrich mock data with AI-generated fields
+async function getMockDestinations() {
+  const base = getBaseMockDestinations();
+  const enriched = [];
 
-    for (const dest of mockData) {
-      const slug = generateSlug({
-        city: dest.city,
-        country: dest.country,
-        name: dest.title,
+  for (const dest of base) {
+    const text = `${dest.title}\n${dest.description}\nLocated in ${dest.city}, ${dest.country}.`;
+
+    let overview_md = '';
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a travel writer. Create a rich and detailed summary for a destination, 3–5 sentences, informative and inspiring.',
+          },
+          {
+            role: 'user',
+            content: text,
+          },
+        ],
       });
 
-      if (!slug.includes(slugParam)) continue;
-
-      const { data: existing } = await supabase
-        .from('destinations')
-        .select('id')
-        .eq('slug', slug)
-        .maybeSingle();
-
-      if (!existing) {
-        const { error } = await supabase.from('destinations').insert([
-          {
-            ...dest,
-            slug,
-            name: dest.title,
-            images: [dest.image],
-          },
-        ]);
-
-        if (error) {
-          return {
-            statusCode: 500,
-            body: JSON.stringify({ error: error.message }),
-          };
-        }
-
-        inserted++;
-      }
+      overview_md = response.choices?.[0]?.message?.content?.trim() || '';
+    } catch (err) {
+      console.error('❌ OpenAI generation failed:', err.message);
     }
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ status: 'ok', inserted }),
-    };
-
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
-    };
+    enriched.push({
+      ...dest,
+      slug: generateSlug(dest),
+      name: dest.title,
+      overview_md,
+      ai_markdown: `${text}\n\n${overview_md}`,
+      popularity: Math.floor(Math.random() * 100),
+      interests: ['culture', 'nature'],
+      continent: dest.country === 'Japan' ? 'Asia' : 'Middle East',
+      link: '', // Add external URL if available
+      itinerary_md: '',
+      attractions: [],
+    });
   }
+
+  return enriched;
+}
+
+module.exports = {
+  getMockDestinations,
+  generateSlug,
 };

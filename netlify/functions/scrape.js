@@ -1,5 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
-const { getMockDestinations, generateSlug } = require('../../scrapers/lonelyPlanetScraper.js');
+const { getEnrichedDestinations, generateSlug } = require('../../scrapers/lonelyPlanetScraper.js');
 require('dotenv').config();
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
@@ -14,9 +14,9 @@ exports.handler = async function (event, context) {
 
   let mockData;
   try {
-    mockData = await getMockDestinations(); // enriched async call
+    mockData = await getEnrichedDestinations(); // ✅ fixed function name
   } catch (err) {
-    console.error('❌ Failed to load mock destinations', err);
+    console.error('❌ Failed to load enriched destinations', err);
     return {
       statusCode: 500,
       body: JSON.stringify({ error: 'Failed to get mock destinations', details: err.message }),
@@ -32,9 +32,6 @@ exports.handler = async function (event, context) {
   for (const dest of mockData) {
     const slug = generateSlug({ city: dest.city, country: dest.country, name: dest.title });
 
-    // TEMP: skip filtering for full testing
-    // if (!slug.includes(slugParam)) continue;
-
     const { data: existing } = await supabase
       .from('destinations')
       .select('id')
@@ -47,7 +44,7 @@ exports.handler = async function (event, context) {
           ...dest,
           slug,
           name: dest.title,
-          images: [dest.image], // or dest.images if it's already an array
+          images: [dest.image],
         },
       ]);
 

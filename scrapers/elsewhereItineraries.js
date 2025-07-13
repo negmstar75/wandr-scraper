@@ -1,8 +1,8 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const { createClient } = require('@supabase/supabase-js');
-const slugify = require('slugify');
-require('dotenv').config();
+// scrapers/elsewhereItineraries.js
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+import { createClient } from '@supabase/supabase-js';
+import slugify from 'slugify';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -10,19 +10,33 @@ const countryList = [
   { slug: 'jordan', country: 'Jordan', region: 'Middle East' },
   { slug: 'japan', country: 'Japan', region: 'Asia' },
   { slug: 'italy', country: 'Italy', region: 'Europe' },
+  { slug: 'morocco', country: 'Morocco', region: 'Africa' },
+  { slug: 'peru', country: 'Peru', region: 'South America' },
 ];
 
 function generateSlug(country, title) {
   return `${slugify(country, { lower: true })}/${slugify(title, { lower: true })}`;
 }
 
+function mapRegionToContinent(region) {
+  const mapping = {
+    'Middle East': 'Africa & Middle East',
+    'Africa': 'Africa & Middle East',
+    'Asia': 'Asia',
+    'Europe': 'Europe',
+    'South America': 'South America',
+  };
+  return mapping[region] || region;
+}
+
 async function scrapeItinerary({ slug: countrySlug, country, region }) {
   const url = `https://www.elsewhere.io/${countrySlug}`;
-  console.log(`🌍 Scraping ${url}`);
+  console.log(`🌍 Scraping: ${url}`);
 
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
+
     const title = $('h1').first().text().trim() || `Trip to ${country}`;
     const itineraryBlocks = $('h3:contains("Day"), h4:contains("Day"), p');
 
@@ -40,43 +54,52 @@ async function scrapeItinerary({ slug: countrySlug, country, region }) {
     });
 
     if (days === 0 || days > 7) {
-      console.warn(`⏭️ Skipping ${country}`);
+      console.warn(`⏭️ Skipping ${country} - No valid 7-day itinerary`);
       return;
     }
 
-    const image = $('meta[property="og:image"]').attr('content') ||
-      `https://source.unsplash.com/featured/?${country},travel`;
+    const image =
+      $('meta[property="og:image"]').attr('content') ||
+      `https://source.unsplash.com/featured/?${encodeURIComponent(country)},travel`;
 
     const slug = generateSlug(country, title);
+    const continent = mapRegionToContinent(region);
 
-    await supabase.from('travel_itineraries').upsert([
-      {
-        slug,
-        title,
-        region,
-        country,
-        theme: 'Classic',
-        days,
-        places: [],
-        markdown,
-        source: 'elsewhere',
-        image,
-      },
-    ]);
+    const data = {
+      slug,
+      title,
+      region,
+      country,
+      continent,
+      theme: 'Classic',
+      days,
+      places: [],
+      markdown,
+      itinerary_md: markdown,
+      source: 'elsewhere',
+      image,
+      link: url,
+      popularity: 7,
+      interests: [],
+      ai_markdown: null,
+      overview_md: null,
+    };
 
-    console.log(`✅ Inserted ${title}`);
+    const { error } = await supabase.from('travel_itineraries').upsert([data]);
+
+    if (error) {
+      console.error(`❌ Failed to insert ${title}:`, error.message);
+    } else {
+      console.log(`✅ Inserted itinerary for ${country}`);
+    }
   } catch (err) {
-    console.error(`❌ Failed ${url}:`, err.message);
+    console.error(`❌ Error scraping ${url}:`, err.message);
   }
 }
 
-async function runElsewhereScraper() {
+export async function runElsewhereScraper() {
   for (const country of countryList) {
     await scrapeItinerary(country);
   }
-  console.log('🎉 Elsewhere scraping done');
+  console.log('🎉 Finished scraping Elsewhere itineraries');
 }
-
-module.exports = {
-  runElsewhereScraper,
-};

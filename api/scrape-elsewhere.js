@@ -1,8 +1,9 @@
-import { runElsewhereScraper } from '../scrapers/elsewhereItineraries.js';
+const { runElsewhereScraper } = require('../../scrapers/elsewhereItineraries');
+require('dotenv').config();
 
-export async function handler(req) {
-  if (req.httpMethod !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+exports.handler = async function (event, context) {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) };
   }
 
   await runElsewhereScraper();
@@ -10,4 +11,4 @@ export async function handler(req) {
     statusCode: 200,
     body: JSON.stringify({ status: 'ok', source: 'elsewhere' }),
   };
-}
+};

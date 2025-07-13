@@ -1,10 +1,10 @@
 const { createClient } = require('@supabase/supabase-js');
-const { getMockDestinations, generateSlug } = require('../../scrapers/mockLonelyPlanet');
+const { getMockDestinations, generateSlug } = require('../../scrapers/mockLonelyPlanet.js');
 require('dotenv').config();
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-exports.handler = async function (event) {
+exports.handler = async function (event, context) {
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -12,12 +12,22 @@ exports.handler = async function (event) {
     };
   }
 
+  let mockData;
+  try {
+    mockData = await getMockDestinations(); // this is now an async function
+  } catch (err) {
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'Failed to get mock destinations', details: err.message }),
+    };
+  }
+
   const slugParam = event.queryStringParameters?.slug || '';
-  const mockData = getMockDestinations();
   let inserted = 0;
 
   for (const dest of mockData) {
     const slug = generateSlug({ city: dest.city, country: dest.country, name: dest.title });
+
     if (!slug.includes(slugParam)) continue;
 
     const { data: existing } = await supabase
@@ -35,14 +45,12 @@ exports.handler = async function (event) {
           images: [dest.image],
         },
       ]);
-
       if (error) {
         return {
           statusCode: 500,
           body: JSON.stringify({ error: error.message }),
         };
       }
-
       inserted++;
     }
   }

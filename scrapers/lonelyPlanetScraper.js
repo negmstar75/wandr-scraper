@@ -5,6 +5,7 @@ const { OpenAI } = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
+// 🔑 API clients
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -22,15 +23,14 @@ function generateLink(country, city) {
 
 // 🧠 AI Summary Generator
 async function generateOverview(city, country, intro, attractions) {
-  const prompt = `You are a travel writer. Write a vivid and informative 3-5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, travel tips, and mention key attractions.`;
-
-  const userInput = `${intro}\n\nKey attractions: ${attractions.join(', ')}`;
+  const prompt = `You are a travel writer. Write a vivid and informative 3–5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, travel tips, and key attractions.`;
+  const input = `${intro}\n\nKey attractions: ${attractions.join(', ')}`;
 
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
     messages: [
       { role: 'system', content: prompt },
-      { role: 'user', content: userInput },
+      { role: 'user', content: input },
     ],
   });
 
@@ -51,7 +51,7 @@ async function scrapeDestination({ city, country, continent }) {
 
     const introText = $('meta[name="description"]').attr('content') || '';
 
-    // Attractions
+    // ✅ Must-see Attractions
     const attractions = [];
     $('h2:contains("Must-see attractions")')
       .next()
@@ -61,54 +61,56 @@ async function scrapeDestination({ city, country, continent }) {
         if (text && !attractions.includes(text)) attractions.push(text);
       });
 
-    // Planning tools
+    // ✅ Planning Tools
     let planning_md = '';
     $('h2:contains("Planning Tools")').nextUntil('h2').each((_, el) => {
-      const tag = el.tagName;
+      const tag = $(el).get(0).tagName;
       const text = $(el).text().trim();
       if (tag === 'h3') planning_md += `\n\n### ${text}\n`;
       else if (tag === 'p') planning_md += `${text}\n`;
     });
 
-    // Things to do
+    // ✅ Things to Do
     let things_md = '';
     $('h2:contains("Things to do")').nextUntil('h2').each((_, el) => {
-      const tag = el.tagName;
+      const tag = $(el).get(0).tagName;
       const text = $(el).text().trim();
       if (tag === 'h3') things_md += `\n\n### ${text}\n`;
       else if (tag === 'p') things_md += `${text}\n`;
     });
 
-    // AI overview
+    // ✅ Generate AI Overview
     const overview_md = await generateOverview(city, country, introText, attractions);
 
-    // Insert to Supabase
-    const { error } = await supabase.from('destinations').upsert(
-      [
-        {
-          slug,
-          title: city,
-          name: city,
-          city,
-          country,
-          region: country,
-          continent,
-          image: `https://source.unsplash.com/featured/?${city},${country}`,
-          link: generateLink(country, city),
-          overview_md,
-          itinerary_md: '',
-          planning_tools_md: planning_md.trim(),
-          things_to_do_md: things_md.trim(),
-          popular_attractions: attractions.length ? attractions : null,
-          interests: ['culture', 'exploration'],
-          popularity: Math.floor(Math.random() * 100),
-          source: 'lp',
-          ai_markdown: `## Overview\n${overview_md}\n\n## Planning Tools\n${planning_md}\n\n## Things to Do\n${things_md}`,
-        },
-      ],
-      { onConflict: 'slug' }
-    );
-   console.log("🚀 Final Insert Object:\n", JSON.stringify(destinationPayload, null, 2));      
+    // ✅ Final insert object
+    const destinationPayload = {
+      slug,
+      title: city,
+      name: city,
+      city,
+      country,
+      region: country,
+      continent,
+      image: `https://source.unsplash.com/featured/?${city},${country}`,
+      link: generateLink(country, city),
+      overview_md,
+      itinerary_md: '',
+      planning_tools_md: planning_md.trim(),
+      things_to_do_md: things_md.trim(),
+      popular_attractions: attractions.length ? attractions : [],
+      interests: ['culture', 'exploration'],
+      popularity: Math.floor(Math.random() * 100),
+      source: 'lp',
+      ai_markdown: `## Overview\n${overview_md}\n\n## Planning Tools\n${planning_md}\n\n## Things to Do\n${things_md}`,
+    };
+
+    // 🔍 Log for debug
+    console.log('🚀 Final Insert Object:\n', JSON.stringify(destinationPayload, null, 2));
+
+    const { error } = await supabase
+      .from('destinations')
+      .upsert([destinationPayload], { onConflict: 'slug' });
+
     if (error) {
       console.error(`❌ Supabase insert failed for ${city}: ${error.message}`);
     } else {
@@ -119,7 +121,7 @@ async function scrapeDestination({ city, country, continent }) {
   }
 }
 
-// 🚀 Runner
+// 🚀 Run All
 async function runLonelyPlanetScraper() {
   console.log('🚀 Starting Lonely Planet scraper...');
   for (const destination of destinationList) {

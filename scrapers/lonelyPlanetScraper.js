@@ -5,6 +5,7 @@ const { OpenAI } = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
+// Init clients
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -14,7 +15,7 @@ const destinationList = [
   { city: 'Tokyo', country: 'Japan', continent: 'Asia' },
 ];
 
-// 🌐 Planning Article Links
+// 📘 Articles
 const planningArticles = {
   London: [
     {
@@ -40,13 +41,13 @@ const planningArticles = {
   ],
 };
 
-// 🔗 Affiliate Link Builder
+// 🔗 Affiliate Link
 function generateLink(country, city) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
   return `https://www.lonelyplanet.com/destinations/${slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
 }
 
-// ✂️ Extract article body
+// 📄 Scrape Article
 async function extractArticleMarkdown({ title, url }) {
   try {
     const res = await axios.get(url);
@@ -63,7 +64,7 @@ async function extractArticleMarkdown({ title, url }) {
   }
 }
 
-// 🧠 AI Summary Generator
+// 🤖 Overview Summary
 async function generateOverview(city, country, intro, attractions) {
   const prompt = `You are a travel writer. Write a vivid and informative 3–5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, tips, and mention these key attractions: ${attractions.join(', ')}`;
 
@@ -78,9 +79,9 @@ async function generateOverview(city, country, intro, attractions) {
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 📅 AI fallback itinerary
+// 📅 3-Day Itinerary
 async function generateItinerary(city) {
-  const prompt = `Generate a sample 3-day itinerary for visiting ${city}. Use markdown headers like "Day 1", "Day 2", etc., and give recommendations in a travel guide tone.`;
+  const prompt = `Generate a sample 3-day itinerary for visiting ${city}. Use markdown headers like "Day 1", "Day 2", etc., and write in a travel guide tone.`;
 
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
@@ -90,7 +91,7 @@ async function generateItinerary(city) {
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 🕵️ Scrape Single Destination
+// 🚀 Scrape 1 Destination
 async function scrapeDestination({ city, country, continent }) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
   const url = `https://www.lonelyplanet.com/destinations/${slug}`;
@@ -104,13 +105,17 @@ async function scrapeDestination({ city, country, continent }) {
 
     const introText = $('meta[name="description"]').attr('content') || '';
 
+    // 🏙️ Attractions
     const attractions = [];
-    $('h2:contains("Must-see attractions")').next().find('a').each((_, el) => {
-      const text = $(el).text().trim();
-      if (text && !attractions.includes(text)) attractions.push(text);
-    });
+    $('h2:contains("Must-see attractions")')
+      .next()
+      .find('a')
+      .each((_, el) => {
+        const text = $(el).text().trim();
+        if (text && !attractions.includes(text)) attractions.push(text);
+      });
 
-    // 🔧 Planning Tools (from separate articles)
+    // 🧰 Planning Tools
     let planning_tools_md = '';
     if (planningArticles[city]) {
       for (const article of planningArticles[city]) {
@@ -118,11 +123,11 @@ async function scrapeDestination({ city, country, continent }) {
       }
     }
 
-    // 🤖 Generate overview and itinerary
+    // 🤖 AI Content
     const overview_md = await generateOverview(city, country, introText, attractions);
     const itinerary_md = await generateItinerary(city);
 
-    // 📦 Build insert object
+    // 🧩 Insert Object
     const destinationPayload = {
       slug,
       title: city,
@@ -132,14 +137,17 @@ async function scrapeDestination({ city, country, continent }) {
       region: country,
       continent,
       image: `https://source.unsplash.com/featured/?${city},${country}`,
+      images: [`https://source.unsplash.com/featured/?${city},${country}`],
       link: generateLink(country, city),
       overview_md,
       itinerary_md,
       planning_tools_md: planning_tools_md.trim(),
-      popular_attractions: attractions.length ? attractions : null,
+      popular_attractions: attractions.length ? attractions : [],
       interests: ['culture', 'exploration'],
       popularity: Math.floor(Math.random() * 100),
       source: 'lp',
+      summary: introText,
+      description: overview_md,
     };
 
     console.log('🚀 Final Insert Object:', JSON.stringify(destinationPayload, null, 2));

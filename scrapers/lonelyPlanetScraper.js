@@ -108,7 +108,7 @@ async function scrapeDestination({ city, country, continent }) {
       ],
       { onConflict: 'slug' }
     );
-
+   console.log("🚀 Final Insert Object:\n", JSON.stringify(destinationPayload, null, 2));      
     if (error) {
       console.error(`❌ Supabase insert failed for ${city}: ${error.message}`);
     } else {

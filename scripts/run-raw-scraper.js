@@ -1,4 +1,3 @@
-import { runRawScraper } from '../scrapers/lonelyPlanetScraperRaw.js';
 import dotenv from 'dotenv';
 dotenv.config();
 

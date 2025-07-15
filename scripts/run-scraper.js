@@ -1,7 +1,6 @@
 // scripts/run-scraper.js
 import { runLonelyPlanetScraper } from '../scrapers/lonelyPlanetScraper.js';
 import dotenv from 'dotenv';
-
 dotenv.config();
 
 (async () => {
@@ -11,7 +10,7 @@ dotenv.config();
     console.log('✅ Scraping finished successfully!');
     process.exit(0);
   } catch (err) {
-    console.error('❌ Scraping failed:', err.message);
+    console.error('❌ Scraping failed:', err);
     process.exit(1);
   }
 })();

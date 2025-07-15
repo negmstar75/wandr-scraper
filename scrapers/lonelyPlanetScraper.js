@@ -1,3 +1,4 @@
+// scrapers/lonelyPlanetScraper.js
 import axios from 'axios';
 import cheerio from 'cheerio';
 import slugify from 'slugify';
@@ -9,65 +10,46 @@ dotenv.config();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// 🌍 Destination list
+// 🌍 Test cities
 const destinationList = [
   { city: 'London', country: 'England', continent: 'Europe' },
   { city: 'Tokyo', country: 'Japan', continent: 'Asia' },
 ];
 
-// 📘 Article URLs
 const planningArticles = {
   London: [
-    {
-      title: 'Best Things to Do',
-      url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london',
-    },
-    {
-      title: 'Things to Know',
-      url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london',
-    },
-    {
-      title: 'Best Neighborhoods',
-      url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london',
-    },
-    {
-      title: 'London on a Budget',
-      url: 'https://www.lonelyplanet.com/articles/london-on-a-budget',
-    },
-    {
-      title: 'London with Kids',
-      url: 'https://www.lonelyplanet.com/articles/london-with-kids',
-    },
+    { title: 'Best Things to Do', url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london' },
+    { title: 'Things to Know', url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london' },
+    { title: 'Best Neighborhoods', url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london' },
+    { title: 'London on a Budget', url: 'https://www.lonelyplanet.com/articles/london-on-a-budget' },
+    { title: 'London with Kids', url: 'https://www.lonelyplanet.com/articles/london-with-kids' },
   ],
 };
 
-// 🔗 Affiliate URL builder
 function generateLink(country, city) {
-  const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
-  return `https://www.lonelyplanet.com/destinations/${slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
+  const slug = `${slugify(country)}/${slugify(city)}`;
+  return `https://www.lonelyplanet.com/destinations/${slug}?sca_ref=5103006.jxkDNNdC6D`;
 }
 
-// 📄 Extract full article content
 async function extractArticleMarkdown({ title, url }) {
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
     const content = $('article')
-      .find('p, li, h2')
+      .find('p, ul li, h2, h3')
       .map((_, el) => $(el).text().trim())
       .get()
       .filter(Boolean)
-      .join('\n');
+      .join('\n\n');
     return `\n\n### ${title}\n\n${content}`;
   } catch (err) {
     console.warn(`⚠️ Failed to load article: ${title}`);
-    return `\n\n### ${title}\n\n⚠️ Could not load content`;
+    return '';
   }
 }
 
-// 📍 Scrape real attractions from attractions page
 async function scrapeAttractions(country, city) {
-  const url = `https://www.lonelyplanet.com/${slugify(country, { lower: true })}/${slugify(city, { lower: true })}/attractions`;
+  const url = `https://www.lonelyplanet.com/${slugify(country)}/${slugify(city)}/attractions`;
   const attractions = [];
 
   try {
@@ -76,7 +58,7 @@ async function scrapeAttractions(country, city) {
 
     $('.Card h3, .css-1e8pxpv').each((_, el) => {
       const name = $(el).text().trim();
-      if (name && !attractions.includes(name)) {
+      if (name && name.length > 3 && !/Subscribe|Newsletter|Guide|Tips|Recommended|eSIM|Top/i.test(name)) {
         attractions.push(name);
       }
     });
@@ -87,39 +69,35 @@ async function scrapeAttractions(country, city) {
   return attractions;
 }
 
-// 🧠 AI Overview
 async function generateOverview(city, country, intro, attractions) {
-  const prompt = `You are a travel writer. Write a vivid and informative 3–5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, tips, and highlight these key attractions: ${attractions.join(', ')}`;
+  const prompt = `You are a travel writer. Write a rich, informative, and friendly travel summary about visiting ${city}, ${country}. Include key attractions: ${attractions.join(', ')}`;
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
     messages: [
       { role: 'system', content: prompt },
-      { role: 'user', content: intro || `Write about ${city}, ${country}` },
+      { role: 'user', content: intro },
     ],
   });
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 📅 AI Itinerary
 async function generateItinerary(city) {
-  const prompt = `Generate a 3-day travel itinerary for ${city}. Use markdown with Day 1, Day 2 headers and include meals, attractions, and evening ideas.`;
+  const prompt = `Write a 3-day travel itinerary for ${city}, including activities for morning, afternoon, and evening in markdown format.`;
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
-    messages: [{ role: 'system', content: prompt }],
+    messages: [{ role: 'user', content: prompt }],
   });
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 🧠 Scrape 1 destination
 async function scrapeDestination({ city, country, continent }) {
-  const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
+  const slug = `${slugify(country)}/${slugify(city)}`;
   const url = `https://www.lonelyplanet.com/destinations/${slug}`;
-  console.log(`🌍 Scraping ${city} → ${url}`);
+  console.log(`🌍 Scraping ${city} (${url})`);
 
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
-
     const introText = $('meta[name="description"]').attr('content') || '';
 
     const attractions = await scrapeAttractions(country, city);
@@ -156,7 +134,7 @@ async function scrapeDestination({ city, country, continent }) {
       description: overview_md,
     };
 
-    console.log('📦 Insert:', JSON.stringify(payload, null, 2));
+    console.log('📦 Final Payload:', JSON.stringify(payload, null, 2));
 
     const { error } = await supabase
       .from('destinations')
@@ -172,7 +150,6 @@ async function scrapeDestination({ city, country, continent }) {
   }
 }
 
-// Main runner
 export async function runLonelyPlanetScraper() {
   console.log('🚀 Starting Lonely Planet scraper...');
   for (const dest of destinationList) {

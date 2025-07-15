@@ -24,6 +24,5 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install
 
-      - name: Run Raw Scraper (No AI)
-  run: node scripts/run-raw-scraper.js
-
+      - name: 🚀 Run Raw Scraper (No AI)
+        run: node scripts/run-raw-scraper.js

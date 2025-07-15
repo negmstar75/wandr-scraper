@@ -1,5 +1,8 @@
-const { runLonelyPlanetScraper } = require('../scrapers/lonelyPlanetScraper.js');
-require('dotenv').config();
+// scripts/run-scraper.js
+import { runLonelyPlanetScraper } from '../scrapers/lonelyPlanetScraper.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 (async () => {
   try {

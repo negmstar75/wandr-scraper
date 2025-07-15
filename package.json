@@ -1,10 +1,10 @@
 {
   "name": "wandr-scraper",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "echo 'No build step needed'",
-    "start": "node index.js"
+    "start": "node scripts/run-scraper.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.3",

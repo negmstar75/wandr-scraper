@@ -10,20 +10,35 @@ dotenv.config();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// Destinations to scrape
+// Destination list
 const destinationList = [
   { city: 'London', country: 'England', continent: 'Europe' },
   { city: 'Tokyo', country: 'Japan', continent: 'Asia' },
 ];
 
-// LP articles per city
+// Planning tools article pages
 const planningArticles = {
   London: [
-    { title: 'Best Things to Do', url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london' },
-    { title: 'Things to Know', url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london' },
-    { title: 'Best Neighborhoods', url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london' },
-    { title: 'London on a Budget', url: 'https://www.lonelyplanet.com/articles/london-on-a-budget' },
-    { title: 'London with Kids', url: 'https://www.lonelyplanet.com/articles/london-with-kids' },
+    {
+      title: 'Best Things to Do',
+      url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london',
+    },
+    {
+      title: 'Things to Know',
+      url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london',
+    },
+    {
+      title: 'Best Neighborhoods',
+      url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london',
+    },
+    {
+      title: 'London on a Budget',
+      url: 'https://www.lonelyplanet.com/articles/london-on-a-budget',
+    },
+    {
+      title: 'London with Kids',
+      url: 'https://www.lonelyplanet.com/articles/london-with-kids',
+    },
   ],
 };
 
@@ -31,12 +46,12 @@ const planningArticles = {
 function generateSlug(country, city) {
   return `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
 }
-
 function generateLink(country, city) {
   const slug = generateSlug(country, city);
   return `https://www.lonelyplanet.com/destinations/${slug}?sca_ref=5103006.jxkDNNdC6D`;
 }
 
+// ✅ Scrape LP article body (markdown)
 async function extractArticleMarkdown({ title, url }) {
   try {
     const res = await axios.get(url);
@@ -49,16 +64,17 @@ async function extractArticleMarkdown({ title, url }) {
       .join('\n\n');
 
     console.log(`🧾 Loaded article "${title}" (${content.length} chars)`);
-
     return `\n\n### ${title}\n\n${content}`;
-  } catch (err) {
-    console.warn(`⚠️ Could not extract article "${title}" — ${url}`);
-    return '';
+  } catch {
+    console.warn(`⚠️ Failed to fetch article: ${title}`);
+    return `\n\n### ${title}\n\nContent not available.`;
   }
 }
 
+// ✅ Scrape attractions from city’s /attractions page
 async function scrapeAttractions(country, city) {
-  const url = `https://www.lonelyplanet.com/${generateSlug(country, city)}/attractions`;
+  const path = generateSlug(country, city);
+  const url = `https://www.lonelyplanet.com/${path}/attractions`;
   const attractions = [];
 
   try {
@@ -71,16 +87,17 @@ async function scrapeAttractions(country, city) {
     });
 
     console.log(`📍 Found ${attractions.length} attractions for ${city}`);
+    return attractions;
   } catch {
-    console.warn(`⚠️ Could not fetch attractions for ${city}`);
+    console.warn(`⚠️ Could not scrape attractions for ${city}`);
+    return [];
   }
-
-  return attractions;
 }
 
+// 🤖 Overview
 async function generateOverview(city, country, intro, attractions) {
   try {
-    const prompt = `You are a travel writer. Write a rich, detailed 3–5 paragraph guide for ${city}, ${country}. Mention these key attractions: ${attractions.join(', ')}`;
+    const prompt = `You are a travel writer. Write a detailed, engaging 3–5 paragraph summary for visiting ${city}, ${country}. Mention these key attractions: ${attractions.join(', ')}`;
     const res = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [
@@ -90,23 +107,27 @@ async function generateOverview(city, country, intro, attractions) {
     });
     return res.choices?.[0]?.message?.content?.trim() || '';
   } catch {
-    return 'Overview unavailable due to API limits.';
+    console.warn(`⚠️ AI overview failed`);
+    return 'Overview not available.';
   }
 }
 
+// 📅 3-day itinerary
 async function generateItinerary(city) {
   try {
-    const prompt = `Write a 3-day sample travel itinerary for ${city}, with markdown headers: Day 1, Day 2, etc. Use travel guide tone.`;
+    const prompt = `Create a 3-day sample travel itinerary for ${city} using markdown (Day 1, Day 2, etc).`;
     const res = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [{ role: 'user', content: prompt }],
     });
     return res.choices?.[0]?.message?.content?.trim() || '';
   } catch {
-    return 'Itinerary unavailable due to API limits.';
+    console.warn(`⚠️ AI itinerary failed`);
+    return 'Itinerary not available.';
   }
 }
 
+// 🔍 Scrape 1 destination
 async function scrapeDestination({ city, country, continent }) {
   const slug = generateSlug(country, city);
   const url = `https://www.lonelyplanet.com/destinations/${slug}`;
@@ -115,10 +136,12 @@ async function scrapeDestination({ city, country, continent }) {
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
-    const intro = $('meta[name="description"]').attr('content') || '';
+    const introText = $('meta[name="description"]').attr('content') || '';
 
+    // Scrape attractions
     const attractions = await scrapeAttractions(country, city);
 
+    // Scrape planning articles
     let planning_md = '';
     if (planningArticles[city]) {
       for (const article of planningArticles[city]) {
@@ -126,7 +149,7 @@ async function scrapeDestination({ city, country, continent }) {
       }
     }
 
-    const overview_md = await generateOverview(city, country, intro, attractions);
+    const overview_md = await generateOverview(city, country, introText, attractions);
     const itinerary_md = await generateItinerary(city);
 
     const payload = {
@@ -145,17 +168,17 @@ async function scrapeDestination({ city, country, continent }) {
       planning_tools_md: planning_md.trim(),
       popular_attractions: attractions,
       interests: ['culture', 'exploration'],
-      popularity: Math.floor(Math.random() * 100),
+      popularity: 60, // fixed or omit if needed
       source: 'lp',
-      summary: intro,
+      summary: introText,
       description: overview_md,
     };
 
-    console.log('📦 Final Payload:', JSON.stringify(payload, null, 2));
+    console.log('📦 Final Payload:\n', JSON.stringify(payload, null, 2));
 
-    const { error } = await supabase.from('destinations').upsert([payload], {
-      onConflict: 'slug',
-    });
+    const { error } = await supabase
+      .from('destinations')
+      .upsert([payload], { onConflict: 'slug' });
 
     if (error) {
       console.error(`❌ Supabase insert failed:`, error.message);

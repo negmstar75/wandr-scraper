@@ -7,116 +7,98 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-// 🔑 Clients
+// Init
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// 🌍 Destinations
+// Destinations
 const destinationList = [
   { city: 'London', country: 'England', continent: 'Europe' },
   { city: 'Tokyo', country: 'Japan', continent: 'Asia' },
 ];
 
-// 📰 Planning articles
+// Article links for planning tools
 const planningArticles = {
   London: [
-    {
-      title: 'Best Things to Do',
-      url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london',
-    },
-    {
-      title: 'Things to Know',
-      url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london',
-    },
-    {
-      title: 'Best Neighborhoods',
-      url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london',
-    },
-    {
-      title: 'London on a Budget',
-      url: 'https://www.lonelyplanet.com/articles/london-on-a-budget',
-    },
-    {
-      title: 'London with Kids',
-      url: 'https://www.lonelyplanet.com/articles/london-with-kids',
-    },
+    { title: 'Best Things to Do', url: 'https://www.lonelyplanet.com/articles/top-things-to-do-in-london' },
+    { title: 'Things to Know', url: 'https://www.lonelyplanet.com/articles/things-to-know-before-traveling-to-london' },
+    { title: 'Best Neighborhoods', url: 'https://www.lonelyplanet.com/articles/best-neighborhoods-in-london' },
+    { title: 'London on a Budget', url: 'https://www.lonelyplanet.com/articles/london-on-a-budget' },
+    { title: 'London with Kids', url: 'https://www.lonelyplanet.com/articles/london-with-kids' },
   ],
 };
 
-// 🔗 LP Affiliate Link
+// Affiliate link
 function generateLink(country, city) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
   return `https://www.lonelyplanet.com/destinations/${slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
 }
 
-// 📘 Extract full markdown content from article page
+// Extract planning tools from article
 async function extractArticleMarkdown({ title, url }) {
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
 
-    const paragraphs = $('.Article__Content p')
-      .map((_, el) => $(el).text().trim())
+    const content = $('article p, article li')
+      .map((_, el) => {
+        const text = $(el).text().trim();
+        return text ? `- ${text}` : null;
+      })
       .get()
       .filter(Boolean)
-      .join('\n\n');
+      .join('\n');
 
-    return `\n\n### ${title}\n\n${paragraphs}`;
+    return `\n\n### ${title}\n\n${content}`;
   } catch (err) {
-    console.warn(`⚠️ Could not extract article "${title}": ${url}`);
-    return '';
+    console.warn(`⚠️ Failed to fetch article ${title}: ${url}`);
+    return `\n\n### ${title}\n\n⚠️ Could not load content`;
   }
 }
 
-// 🤖 Generate overview markdown
+// AI Summary
 async function generateOverview(city, country, intro, attractions) {
-  const prompt = `You are a travel writer. Write a vivid and informative 3–5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, travel tips, and highlight these key attractions: ${attractions.join(', ')}`;
-
+  const prompt = `You are a travel writer. Write a vivid and informative 3–5 paragraph summary about visiting ${city}, ${country}. Include cultural insights, tips, and highlight these key attractions: ${attractions.join(', ')}`;
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
     messages: [
       { role: 'system', content: prompt },
-      { role: 'user', content: intro },
+      { role: 'user', content: intro || `Write about ${city}, ${country}` },
     ],
   });
-
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 📅 Sample 3-Day itinerary
+// AI Itinerary
 async function generateItinerary(city) {
-  const prompt = `Create a sample 3-day itinerary for a trip to ${city}, using markdown with "Day 1", "Day 2", etc. Focus on travel guide style.`;
-
+  const prompt = `Generate a 3-day travel itinerary for ${city}. Use markdown with Day 1, Day 2 headers and include meals, attractions, and evening ideas.`;
   const res = await openai.chat.completions.create({
     model: 'gpt-4',
     messages: [{ role: 'system', content: prompt }],
   });
-
   return res.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// 🔍 Scrape 1 destination
+// Scrape 1 destination
 async function scrapeDestination({ city, country, continent }) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
   const url = `https://www.lonelyplanet.com/destinations/${slug}`;
-
-  console.log(`🌍 Scraping: ${city}, ${country}`);
-  console.log(`🔗 URL: ${url}`);
+  console.log(`🌍 Scraping ${city} → ${url}`);
 
   try {
     const res = await axios.get(url);
     const $ = cheerio.load(res.data);
 
-    const introText = $('meta[name="description"]').attr('content') || '';
+    const intro = $('meta[name="description"]').attr('content') || '';
 
-    // 🏛️ Attractions
+    // Attractions from cards
     const attractions = [];
-    $('a[href*="/attractions/"] h3').each((_, el) => {
-      const name = $(el).text().trim();
+    $('a:has(h3), div:has(h3)').each((_, el) => {
+      const name = $(el).find('h3').first().text().trim();
       if (name && !attractions.includes(name)) attractions.push(name);
     });
 
-    // 🧰 Planning tools (from article pages)
+    // Planning Tools
     let planning_tools_md = '';
     if (planningArticles[city]) {
       for (const article of planningArticles[city]) {
@@ -124,10 +106,11 @@ async function scrapeDestination({ city, country, continent }) {
       }
     }
 
-    // ✨ AI-generated fields
-    const overview_md = await generateOverview(city, country, introText, attractions);
+    // AI content
+    const overview_md = await generateOverview(city, country, intro, attractions);
     const itinerary_md = await generateItinerary(city);
 
+    // Insert payload
     const destinationPayload = {
       slug,
       title: city,
@@ -146,31 +129,31 @@ async function scrapeDestination({ city, country, continent }) {
       interests: ['culture', 'exploration'],
       popularity: Math.floor(Math.random() * 100),
       source: 'lp',
-      summary: introText,
+      summary: intro,
       description: overview_md,
     };
 
-    console.log('📦 Insert object:\n', JSON.stringify(destinationPayload, null, 2));
+    console.log('📦 Final insert object:\n', JSON.stringify(destinationPayload, null, 2));
 
     const { error } = await supabase
       .from('destinations')
       .upsert([destinationPayload], { onConflict: 'slug' });
 
     if (error) {
-      console.error(`❌ Supabase insert failed:`, error.message);
+      console.error(`❌ Supabase insert failed: ${error.message}`);
     } else {
-      console.log(`✅ Saved to Supabase: ${city}`);
+      console.log(`✅ Inserted successfully: ${city}`);
     }
   } catch (err) {
     console.error(`❌ Failed to scrape ${city}: ${err.message}`);
   }
 }
 
-// 🏁 Main runner
+// Main Runner
 export async function runLonelyPlanetScraper() {
   console.log('🚀 Starting Lonely Planet scraper...');
-  for (const destination of destinationList) {
-    await scrapeDestination(destination);
+  for (const dest of destinationList) {
+    await scrapeDestination(dest);
   }
-  console.log('🎉 Scraping complete!');
+  console.log('🎉 Done!');
 }

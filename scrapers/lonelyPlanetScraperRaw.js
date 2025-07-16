@@ -56,8 +56,10 @@ function generateLink(country, city) {
 async function extractArticleMarkdown({ title, url }) {
   console.log(`🧭 Launching headless browser for: ${title}`);
 
-  const browser = await puppeteer.launch({ headless: 'new' });
-  const page = await browser.newPage();
+  const browser = await puppeteer.launch({
+  headless: true,
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
+});
 
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });

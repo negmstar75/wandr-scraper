@@ -7,7 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-// 🔑 Supabase client
+// Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 // 🌍 Destination list
@@ -16,7 +16,7 @@ const destinations = [
   { city: 'Tokyo', country: 'Japan', continent: 'Asia' },
 ];
 
-// 📘 External article URLs for planning tools
+// 🧭 Planning article links
 const planningArticles = {
   London: [
     {
@@ -46,48 +46,51 @@ const planningArticles = {
   ],
 };
 
-// 🔗 LP destination link
+// 🔗 Affiliate link generator
 function generateLink(country, city) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
   return `https://www.lonelyplanet.com/destinations/${slug}`;
 }
 
-// 📄 Extract article content with Puppeteer
+// 📄 Extract full article content with Puppeteer
 async function extractArticleMarkdown({ title, url }) {
   console.log(`🧭 Launching headless browser for: ${title}`);
-
-  const browser = await puppeteer.launch({
-  headless: true,
-  args: ['--no-sandbox', '--disable-setuid-sandbox']
-});
-
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForSelector('article', { timeout: 10000 });
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
     const content = await page.evaluate(() => {
       const article = document.querySelector('article');
       if (!article) return '';
-      return Array.from(article.querySelectorAll('h2, h3, p'))
-        .map(el => el.textContent.trim())
+      return Array.from(article.querySelectorAll('p'))
+        .map(p => p.innerText.trim())
         .filter(Boolean)
         .join('\n\n');
     });
 
     await browser.close();
-    console.log(`🧾 Loaded article "${title}" (${content.length} chars)`);
+
+    if (!content) {
+      console.warn(`⚠️ Article "${title}" is empty — check selector or page structure`);
+    }
+
     return `\n\n### ${title}\n\n${content}`;
   } catch (err) {
-    await browser.close();
-    console.warn(`⚠️ Article "${title}" is empty — check selector or page structure\n🔍 URL: ${url}\n🔍 Reason: ${err.message}`);
-    return `\n\n### ${title}\n\n`;
+    console.error(`🔍 URL: ${url}`);
+    console.error(`🔍 Reason: ${err.message}`);
+    return '';
   }
 }
 
-// 🧭 Scrape 1 destination
+// 🚀 Scrape a single destination
 async function scrapeOne({ city, country, continent }) {
   const slug = `${slugify(country, { lower: true })}/${slugify(city, { lower: true })}`;
-  const url = generateLink(country, city);
+  const url = `https://www.lonelyplanet.com/destinations/${slug}`;
   console.log(`🌍 Scraping ${city} (${url})`);
 
   try {
@@ -95,16 +98,14 @@ async function scrapeOne({ city, country, continent }) {
     const $ = cheerio.load(res.data);
     const summary = $('meta[name="description"]').attr('content') || '';
 
-    // 🗺️ Attempt to find attractions (from teaser list)
     const attractions = [];
     $('a[href*="/attractions/"] h3').each((_, el) => {
       const name = $(el).text().trim();
       if (name && !attractions.includes(name)) attractions.push(name);
     });
-
     console.log(`📍 Found ${attractions.length} attractions for ${city}`);
 
-    // 🧰 Planning Tools (Puppeteer scraping of external articles)
+    // 📚 Planning articles markdown
     let planning_tools_md = '';
     if (planningArticles[city]) {
       for (const article of planningArticles[city]) {
@@ -112,7 +113,7 @@ async function scrapeOne({ city, country, continent }) {
       }
     }
 
-    // 📦 Build insert payload
+    // 📦 Final payload
     const payload = {
       slug,
       title: city,
@@ -123,7 +124,7 @@ async function scrapeOne({ city, country, continent }) {
       continent,
       image: `https://source.unsplash.com/featured/?${city},${country}`,
       images: [`https://source.unsplash.com/featured/?${city},${country}`],
-      link: url,
+      link: generateLink(country, city),
       overview_md: '',
       itinerary_md: '',
       planning_tools_md: planning_tools_md.trim(),
@@ -137,9 +138,9 @@ async function scrapeOne({ city, country, continent }) {
 
     console.log('📦 Final Payload:', JSON.stringify(payload, null, 2));
 
-    const { error } = await supabase
-      .from('destinations')
-      .upsert([payload], { onConflict: 'slug' });
+    const { error } = await supabase.from('destinations').upsert([payload], {
+      onConflict: 'slug',
+    });
 
     if (error) {
       console.error(`❌ Failed inserting ${city}:`, error.message);
@@ -151,11 +152,10 @@ async function scrapeOne({ city, country, continent }) {
   }
 }
 
-// 🏁 Runner
+// 🔁 Main runner
 export async function runRawScraper() {
   console.log('🟢 Starting fallback raw scraper...');
   for (const dest of destinations) {
     await scrapeOne(dest);
   }
-  console.log('✅ Fallback scraper run complete!');
 }

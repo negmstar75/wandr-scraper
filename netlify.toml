@@ -1,1 +1,7 @@
+[build]
+  functions = "netlify/functions"
+  node_bundler = "esbuild"
+
+[dev]
+  functionsPort = 8888
 

@@ -5,17 +5,33 @@ exports.handler = async (event) => {
     const city = event.queryStringParameters.city || "Paris";
     const apiKey = process.env.OPENTRIPMAP_API_KEY;
 
-    // Get coordinates for the city
-    const geoRes = await fetch(
+    // 1. Try OpenTripMap geoname
+    let geoRes = await fetch(
       `https://api.opentripmap.com/0.1/en/places/geoname?name=${encodeURIComponent(city)}&apikey=${apiKey}`
     );
-    const geoData = await geoRes.json();
+    let geoData = await geoRes.json();
 
+    // 2. If no lat/lon, fallback to Nominatim
     if (!geoData || !geoData.lat || !geoData.lon) {
-      return { statusCode: 400, body: JSON.stringify({ error: "City not found" }) };
+      const nominatimRes = await fetch(
+        `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(city)}&format=json&limit=1`
+      );
+      const nominatimData = await nominatimRes.json();
+
+      if (nominatimData.length > 0) {
+        geoData = {
+          lat: nominatimData[0].lat,
+          lon: nominatimData[0].lon,
+        };
+      } else {
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: "City not found" }),
+        };
+      }
     }
 
-    // Get attractions list
+    // 3. Get attractions near those coordinates
     const poiRes = await fetch(
       `https://api.opentripmap.com/0.1/en/places/radius?radius=5000&lon=${geoData.lon}&lat=${geoData.lat}&rate=2&limit=20&apikey=${apiKey}`
     );

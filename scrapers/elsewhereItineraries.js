@@ -4,6 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 const slugify = require('slugify');
 const { OpenAI } = require('openai');
 
+
 require('dotenv').config();
 
 const supabase = createClient(

@@ -1,4 +1,4 @@
-name: 🌍 Run Lonely Planet Scraper
+name: 🌍 Legacy LP Scraper Job
 
 on:
   workflow_dispatch: # Manual trigger via GitHub UI

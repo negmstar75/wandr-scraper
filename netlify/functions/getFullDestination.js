@@ -1,117 +1,172 @@
+// /netlify/functions/getFullDestination.js
 import fetch from "node-fetch";
 
+const OPENTRIPMAP_API_KEY = process.env.OPENTRIPMAP_API_KEY;
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+const OPENWEATHERMAP_API_KEY = process.env.OPENWEATHERMAP_API_KEY;
+const EVENTBRITE_API_KEY = process.env.EVENTBRITE_API_KEY;
+const WIKIMEDIA_USER_AGENT = process.env.WIKIMEDIA_USER_AGENT || "Wandr/1.0";
+
 export async function handler(event) {
-  try {
-    const params = event.queryStringParameters;
-    const city = params.city || "Tokyo";
-    const country = params.country || "";
+  const { city, country } = event.queryStringParameters;
 
-    // 🌍 Environment Variables
-    const OTM_KEY = process.env.OPENTRIPMAP_KEY;     // OpenTripMap
-    const GP_KEY = process.env.GOOGLE_PLACES_KEY;   // Google Places
-    const WIKI_AGENT = process.env.WIKIMEDIA_USER_AGENT; 
-    const FSQ_KEY = process.env.FOURSQUARE_KEY;     // Foursquare
-    const WEATHER_KEY = process.env.OPENWEATHER_KEY; // OpenWeatherMap
-    const EVENTBRITE_TOKEN = process.env.EVENTBRITE_TOKEN;
-    const NEWS_KEY = process.env.NEWSAPI_KEY;
-
-    let response = {
-      city,
-      country,
-      attractions: [],
-      details: {},
-      images: [],
-      foursquare: [],
-      wikipedia: {},
-      weather: {},
-      events: [],
-      news: []
+  if (!city) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: "City parameter is required" }),
     };
+  }
 
-    // 1️⃣ OpenTripMap: get city coords + attractions
-    const geoRes = await fetch(
-      `https://api.opentripmap.com/0.1/en/places/geoname?name=${city}&apikey=${OTM_KEY}`
-    );
-    const geoData = await geoRes.json();
-    if (geoData.lat && geoData.lon) {
-      const attractionsRes = await fetch(
-        `https://api.opentripmap.com/0.1/en/places/radius?radius=5000&lon=${geoData.lon}&lat=${geoData.lat}&limit=10&apikey=${OTM_KEY}`
-      );
-      const attractionsData = await attractionsRes.json();
-      response.attractions = attractionsData.features?.map(p => ({
-        name: p.properties.name,
-        kind: p.properties.kinds,
-      })) || [];
-      response.details.location = { lat: geoData.lat, lon: geoData.lon };
-    }
+  try {
+    // 1. Resolve coordinates with OpenTripMap or Google fallback
+    let lat, lon;
 
-    // 2️⃣ Google Places: city photo + details
-    if (GP_KEY) {
-      const gpRes = await fetch(
-        `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${city}&key=${GP_KEY}`
-      );
-      const gpData = await gpRes.json();
-      if (gpData.results?.[0]) {
-        const place = gpData.results[0];
-        response.details.google = {
-          name: place.name,
-          rating: place.rating,
-          address: place.formatted_address,
-        };
-        if (place.photos?.length) {
-          const photoRef = place.photos[0].photo_reference;
-          response.images.push(
-            `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoRef}&key=${GP_KEY}`
-          );
-        }
+    const geoUrl = `https://api.opentripmap.com/0.1/en/places/geoname?name=${encodeURIComponent(
+      city
+    )}&apikey=${OPENTRIPMAP_API_KEY}`;
+    let geoData = await fetch(geoUrl).then((res) => res.json());
+
+    if (geoData && geoData.lat && geoData.lon) {
+      lat = geoData.lat;
+      lon = geoData.lon;
+    } else {
+      const googleGeoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+        city + (country ? `, ${country}` : "")
+      )}&key=${GOOGLE_PLACES_API_KEY}`;
+      const googleGeo = await fetch(googleGeoUrl).then((res) => res.json());
+
+      if (
+        googleGeo.results &&
+        googleGeo.results.length > 0 &&
+        googleGeo.results[0].geometry
+      ) {
+        lat = googleGeo.results[0].geometry.location.lat;
+        lon = googleGeo.results[0].geometry.location.lng;
       }
     }
 
-    // 3️⃣ Wikimedia: city summary
-    const wikiRes = await fetch(
-      `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(city)}`,
-      { headers: { "User-Agent": WIKI_AGENT } }
-    );
-    const wikiData = await wikiRes.json();
-    if (wikiData.extract) {
-      response.wikipedia = {
-        title: wikiData.title,
-        description: wikiData.description,
-        extract: wikiData.extract,
-        url: wikiData.content_urls?.desktop?.page,
-        image: wikiData.thumbnail?.source,
+    if (!lat || !lon) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ error: "City not found" }),
       };
     }
 
-    // 4️⃣ Foursquare: food & nightlife
-    if (FSQ_KEY && response.details.location) {
-      const { lat, lon } = response.details.location;
-      const fsqRes = await fetch(
-        `https://api.foursquare.com/v3/places/search?ll=${lat},${lon}&categories=13065,13003&limit=5`,
-        { headers: { Authorization: FSQ_KEY } }
-      );
-      const fsqData = await fsqRes.json();
-      response.foursquare = fsqData.results?.map(f => ({
-        name: f.name,
-        category: f.categories?.[0]?.name,
-        address: f.location?.formatted_address,
-      })) || [];
+    // 2. Attractions
+    let attractions = [];
+    try {
+      const radiusUrl = `https://api.opentripmap.com/0.1/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=10&apikey=${OPENTRIPMAP_API_KEY}`;
+      const poiData = await fetch(radiusUrl).then((res) => res.json());
+
+      if (poiData.features) {
+        attractions = poiData.features.map((p) => ({
+          xid: p.properties.xid,
+          name: p.properties.name,
+          kind: p.properties.kinds,
+        }));
+      }
+    } catch (e) {
+      attractions = [];
     }
 
-    // 5️⃣ OpenWeatherMap: current weather
-    if (WEATHER_KEY && response.details.location) {
-      const { lat, lon } = response.details.location;
-      const weatherRes = await fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${WEATHER_KEY}&units=metric`
-      );
-      const weatherData = await weatherRes.json();
-      if (weatherData.weather) {
-        response.weather = {
+    // 3. Hotels (Google Places)
+    let hotels = [];
+    try {
+      const hotelsUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=hotels+in+${encodeURIComponent(
+        city
+      )}&key=${GOOGLE_PLACES_API_KEY}`;
+      const hotelData = await fetch(hotelsUrl).then((res) => res.json());
+
+      if (hotelData.results) {
+        hotels = hotelData.results.slice(0, 10).map((h) => ({
+          name: h.name,
+          address: h.formatted_address,
+          rating: h.rating,
+          user_ratings_total: h.user_ratings_total,
+          place_id: h.place_id,
+        }));
+      }
+    } catch (e) {
+      hotels = [];
+    }
+
+    // 4. Restaurants (Google Places)
+    let restaurants = [];
+    try {
+      const restaurantUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=restaurants+in+${encodeURIComponent(
+        city
+      )}&key=${GOOGLE_PLACES_API_KEY}`;
+      const restaurantData = await fetch(restaurantUrl).then((res) => res.json());
+
+      if (restaurantData.results) {
+        restaurants = restaurantData.results.slice(0, 10).map((r) => ({
+          name: r.name,
+          address: r.formatted_address,
+          rating: r.rating,
+          user_ratings_total: r.user_ratings_total,
+          place_id: r.place_id,
+        }));
+      }
+    } catch (e) {
+      restaurants = [];
+    }
+
+    // 5. Events (Eventbrite API)
+    let events = [];
+    try {
+      const eventsUrl = `https://www.eventbriteapi.com/v3/events/search/?q=${encodeURIComponent(
+        city
+      )}&location.address=${encodeURIComponent(
+        city
+      )}&token=${EVENTBRITE_API_KEY}`;
+      const eventData = await fetch(eventsUrl).then((res) => res.json());
+
+      if (eventData.events) {
+        events = eventData.events.slice(0, 5).map((ev) => ({
+          name: ev.name.text,
+          url: ev.url,
+          start: ev.start.local,
+          end: ev.end.local,
+        }));
+      }
+    } catch (e) {
+      events = [];
+    }
+
+    // 6. Current weather
+    let weather = {};
+    try {
+      const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${OPENWEATHERMAP_API_KEY}`;
+      const weatherData = await fetch(weatherUrl).then((res) => res.json());
+
+      if (weatherData && weatherData.main) {
+        weather = {
           temp: weatherData.main.temp,
-          condition: weatherData.weather[0].description,
-          icon: `https://openweathermap.org/img/wn/${weatherData.weather[0].icon}@2x.png`,
+          feels_like: weatherData.main.feels_like,
+          description: weatherData.weather[0].description,
+          icon: weatherData.weather[0].icon,
         };
       }
+    } catch (e) {
+      weather = {};
     }
 
-    // 6️⃣ Event
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        city,
+        coordinates: { lat, lon },
+        attractions,
+        hotels,
+        restaurants,
+        events,
+        weather,
+      }),
+    };
+  } catch (err) {
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: err.message }),
+    };
+  }
+}

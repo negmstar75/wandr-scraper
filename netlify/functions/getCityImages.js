@@ -1,33 +1,22 @@
-import fetch from "node-fetch";
+const fetch = require("node-fetch");
 
-export async function handler(event) {
-  const { city = "Tokyo" } = event.queryStringParameters;
+exports.handler = async (event) => {
+  const city = event.queryStringParameters.city || "Paris";
 
-  try {
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&format=json&prop=imageinfo&generator=search&gsrsearch=${encodeURIComponent(
-      city
-    )}&gsrlimit=10&iiprop=url&iiurlwidth=800&iiurlheight=600&origin=*`;
+  const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch=${city}&gsrlimit=10&prop=pageimages&piprop=thumbnail&pithumbsize=500`;
 
-    const res = await fetch(url, {
-      headers: { "User-Agent": process.env.WIKIMEDIA_USER_AGENT },
-    });
-    const data = await res.json();
+  const res = await fetch(url, {
+    headers: { "User-Agent": process.env.WIKIMEDIA_USER_AGENT },
+  });
+  const data = await res.json();
 
-    const images = Object.values(data.query?.pages || {}).map((p) => ({
-      title: p.title,
-      url: p.imageinfo?.[0]?.url,
-      thumb: p.imageinfo?.[0]?.thumburl,
-    }));
+  const images = Object.values(data.query.pages).map((p) => ({
+    title: p.title,
+    image: p.thumbnail?.source || null,
+  }));
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ city, images }),
-    };
-  } catch (err) {
-    console.error("❌ Error in getCityImages:", err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
-    };
-  }
-}
+  return {
+    statusCode: 200,
+    body: JSON.stringify({ city, images }),
+  };
+};

@@ -1,93 +1,84 @@
-// netlify/functions/getDestinationDetails.js
-const fetch = require("node-fetch");
+// /netlify/functions/getDestinationDetails.js
 
-exports.handler = async (event) => {
+import fetch from "node-fetch";
+
+export async function handler(event) {
+  const { xid, place_id } = event.queryStringParameters;
+
+  if (!xid && !place_id) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: "Please provide xid (OpenTripMap) or place_id (Google)" }),
+    };
+  }
+
   try {
-    const { xid, place_id } = event.queryStringParameters;
+    let standardized = null;
+    let debug = {};
 
-    if (!xid && !place_id) {
+    // --- 1. Try OpenTripMap if xid provided ---
+    if (xid) {
+      const url = `https://api.opentripmap.com/0.1/en/places/xid/${xid}?apikey=${process.env.OPENTRIPMAP_API_KEY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      debug.opentripmap = data;
+
+      if (data && !data.error) {
+        standardized = {
+          name: data.name || null,
+          address: data.address ? Object.values(data.address).join(", ") : null,
+          description: data.wikipedia_extracts?.text || data.info?.descr || null,
+          rating: null, // OTM has no ratings
+          categories: data.kinds ? data.kinds.split(",") : [],
+          photos: data.preview?.source ? [data.preview.source] : [],
+          url: data.wikipedia || data.url || null,
+        };
+      }
+    }
+
+    // --- 2. Fallback to Google if no xid or no usable data ---
+    if ((!standardized || !standardized.name) && place_id) {
+      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      debug.google = data;
+
+      if (data.result) {
+        standardized = {
+          name: data.result.name || null,
+          address: data.result.formatted_address || null,
+          description: data.result.editorial_summary?.overview || null,
+          rating: data.result.rating || null,
+          categories: data.result.types || [],
+          photos: data.result.photos
+            ? data.result.photos.map(
+                (p) =>
+                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
+              )
+            : [],
+          url: data.result.url || null,
+        };
+      }
+    }
+
+    if (!standardized) {
       return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "xid (OTM) or place_id (Google) is required" }),
+        statusCode: 404,
+        body: JSON.stringify({ error: "No details found", debug }),
       };
     }
 
-    const debug = {};
-
-    // 1. If xid exists → try OpenTripMap
-    if (xid) {
-      const otmUrl = `https://api.opentripmap.com/0.1/en/places/xid/${xid}?apikey=${process.env.OPENTRIPMAP_API_KEY}`;
-      debug.otmUrl = otmUrl;
-
-      const otmRes = await fetch(otmUrl);
-      const otmData = await otmRes.json();
-      debug.otmData = otmData;
-
-      if (otmData.error && otmData.error.includes("Unauthorized")) {
-        debug.otmError = "Unauthorized → falling back to Google";
-      } else if (otmData.name) {
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            source: "opentripmap",
-            details: {
-              name: otmData.name,
-              address: otmData.address ? otmData.address.road : null,
-              description: otmData.wikipedia_extracts
-                ? otmData.wikipedia_extracts.text
-                : null,
-              url: otmData.url,
-              kinds: otmData.kinds,
-            },
-            debug,
-          }),
-        };
-      }
-    }
-
-    // 2. If OpenTripMap failed OR place_id provided → use Google
-    if (place_id || xid) {
-      const googleUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id ||
-        xid}&fields=name,formatted_address,geometry,rating,types,photos,url&key=${
-        process.env.GOOGLE_PLACES_API_KEY
-      }`;
-      debug.googleUrl = googleUrl;
-
-      const googleRes = await fetch(googleUrl);
-      const googleData = await googleRes.json();
-      debug.googleData = googleData;
-
-      if (googleData.result) {
-        const g = googleData.result;
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            source: "google",
-            details: {
-              name: g.name,
-              address: g.formatted_address,
-              rating: g.rating,
-              types: g.types,
-              url: g.url,
-              photos: g.photos
-                ? g.photos.map((p) => ({
-                    photo_reference: p.photo_reference,
-                    height: p.height,
-                    width: p.width,
-                  }))
-                : [],
-            },
-            debug,
-          }),
-        };
-      }
-    }
-
     return {
-      statusCode: 404,
-      body: JSON.stringify({ error: "Place not found", debug }),
+      statusCode: 200,
+      body: JSON.stringify({
+        details: standardized,
+        debug, // keep raw data here
+      }),
     };
   } catch (err) {
-    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: err.message }),
+    };
   }
-};
+}

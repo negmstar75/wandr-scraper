@@ -11,10 +11,15 @@ exports.handler = async (event) => {
     );
     let geoData = await geoRes.json();
 
-    // 2. If no lat/lon, fallback to Nominatim
+    // 2. If no lat/lon, fallback to Nominatim with User-Agent
     if (!geoData || !geoData.lat || !geoData.lon) {
       const nominatimRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(city)}&format=json&limit=1`
+        `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(city)}&format=json&limit=1`,
+        {
+          headers: {
+            "User-Agent": process.env.WIKIMEDIA_USER_AGENT || "Wandr/1.0 (contact: your_email@example.com)"
+          }
+        }
       );
       const nominatimData = await nominatimRes.json();
 
@@ -31,7 +36,7 @@ exports.handler = async (event) => {
       }
     }
 
-    // 3. Get attractions near those coordinates
+    // 3. Get attractions from OpenTripMap using coords
     const poiRes = await fetch(
       `https://api.opentripmap.com/0.1/en/places/radius?radius=5000&lon=${geoData.lon}&lat=${geoData.lat}&rate=2&limit=20&apikey=${apiKey}`
     );

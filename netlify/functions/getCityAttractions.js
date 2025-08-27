@@ -1,91 +1,88 @@
+// netlify/functions/getCityAttractions.js
 const fetch = require("node-fetch");
 
 exports.handler = async (event) => {
   try {
-    const city = event.queryStringParameters.city || "Paris";
-    const apiKey = process.env.OPENTRIPMAP_API_KEY;
+    const { city } = event.queryStringParameters;
+    if (!city) {
+      return { statusCode: 400, body: JSON.stringify({ error: "City is required" }) };
+    }
 
-    let debug = {};
+    const debug = {};
 
-    // 1. Try OpenTripMap geoname API
-    const geoUrl = `https://api.opentripmap.com/0.1/en/places/geoname?name=${encodeURIComponent(
+    // 1. Geocode city with Nominatim
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
       city
-    )}&apikey=${apiKey}`;
-    let geoRes = await fetch(geoUrl);
-    let geoData = await geoRes.json();
-    debug.geoUrl = geoUrl;
-    debug.geoData = geoData;
+    )}&format=json&limit=1`;
+    debug.nominatimUrl = nominatimUrl;
 
-    // 2. If no lat/lon, fallback to Nominatim
-    if (!geoData || !geoData.lat || !geoData.lon) {
-      const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
+    const nomRes = await fetch(nominatimUrl, {
+      headers: { "User-Agent": process.env.WIKIMEDIA_USER_AGENT || "Wandr/1.0" },
+    });
+    const nomData = await nomRes.json();
+    debug.nominatimData = nomData;
+
+    if (!nomData || !nomData[0]) {
+      return { statusCode: 404, body: JSON.stringify({ error: "City not found" }) };
+    }
+
+    const lat = nomData[0].lat;
+    const lon = nomData[0].lon;
+
+    // 2. Try OpenTripMap API
+    const otmUrl = `https://api.opentripmap.com/0.1/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=30&apikey=${process.env.OPENTRIPMAP_API_KEY}`;
+    debug.otmUrl = otmUrl;
+
+    const otmRes = await fetch(otmUrl);
+    const poiData = await otmRes.json();
+    debug.otmData = poiData;
+
+    if (poiData.error && poiData.error.includes("Unauthorized")) {
+      // 3. Fallback to Google Places
+      const googleUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=attractions+in+${encodeURIComponent(
         city
-      )}&format=json&limit=1`;
+      )}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+      debug.googleUrl = googleUrl;
 
-      const nominatimRes = await fetch(nominatimUrl, {
-        headers: {
-          "User-Agent":
-            process.env.WIKIMEDIA_USER_AGENT ||
-            "Wandr/1.0 (contact: you@example.com)",
-        },
-      });
-      const nominatimData = await nominatimRes.json();
-      debug.nominatimUrl = nominatimUrl;
-      debug.nominatimData = nominatimData;
+      const googleRes = await fetch(googleUrl);
+      const googleData = await googleRes.json();
+      debug.googleData = googleData;
 
-      if (nominatimData.length > 0) {
-        geoData = { lat: nominatimData[0].lat, lon: nominatimData[0].lon };
+      if (googleData.results && googleData.results.length > 0) {
+        const attractions = googleData.results.map((place) => ({
+          name: place.name,
+          address: place.formatted_address,
+          rating: place.rating,
+          place_id: place.place_id,
+        }));
+        return {
+          statusCode: 200,
+          body: JSON.stringify({ city, attractions, debug }),
+        };
       } else {
         return {
-          statusCode: 400,
-          body: JSON.stringify({ error: "City not found", debug }),
+          statusCode: 200,
+          body: JSON.stringify({ city, attractions: [], debug }),
         };
       }
     }
 
-    // 3. Query POIs (radius search)
-    const radiusUrl = `https://api.opentripmap.com/0.1/en/places/radius?radius=10000&lon=${
-      geoData.lon
-    }&lat=${geoData.lat}&rate=1&limit=30&apikey=${apiKey}`;
-    let poiRes = await fetch(radiusUrl);
-    let poiData = await poiRes.json();
-    debug.radiusUrl = radiusUrl;
-    debug.poiData = poiData;
-
-    // 4. If still empty, try bbox fallback
-    if (!poiData || !poiData.features || poiData.features.length === 0) {
-      const bboxUrl = `https://api.opentripmap.com/0.1/en/places/bbox?lon_min=${
-        geoData.lon - 0.1
-      }&lat_min=${geoData.lat - 0.1}&lon_max=${geoData.lon + 0.1}&lat_max=${
-        geoData.lat + 0.1
-      }&limit=30&apikey=${apiKey}`;
-
-      const bboxRes = await fetch(bboxUrl);
-      poiData = await bboxRes.json();
-
-      debug.bboxUrl = bboxUrl;
-      debug.bboxData = poiData;
-    }
-
-    // 5. Still empty? return debug info
-    if (!poiData || !poiData.features || poiData.features.length === 0) {
+    // If OTM worked
+    if (poiData && poiData.features) {
+      const attractions = poiData.features.map((f) => ({
+        name: f.properties.name,
+        kinds: f.properties.kinds,
+        xid: f.properties.xid,
+      }));
       return {
         statusCode: 200,
-        body: JSON.stringify({ city, attractions: [], debug }),
+        body: JSON.stringify({ city, attractions, debug }),
       };
     }
 
-    // 6. Parse results
-    const attractions = poiData.features.map((p) => ({
-      xid: p.properties.xid,
-      name: p.properties.name,
-      kind: p.properties.kinds,
-      dist: p.properties.dist,
-    }));
-
     return {
       statusCode: 200,
-      body: JSON.stringify({ city, attractions, debug }),
+      body: JSON.stringify({ city, attractions: [], debug }),
     };
   } catch (err) {
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };

@@ -1,50 +1,42 @@
-import fetch from 'node-fetch';
+const fetch = require("node-fetch");
 
-export async function handler(event) {
-  const { city = 'Tokyo', lat, lon } = event.queryStringParameters;
-
+exports.handler = async (event) => {
   try {
-    // Step 1: Geocode city → lat/lon (OpenTripMap or Google)
-    let latitude = lat;
-    let longitude = lon;
+    const city = event.queryStringParameters.city || "Paris";
+    const apiKey = process.env.OPENTRIPMAP_API_KEY;
 
-    if (!lat || !lon) {
-      const geoRes = await fetch(
-        `https://api.opentripmap.com/0.1/en/places/geoname?name=${encodeURIComponent(city)}&apikey=${process.env.OPENTRIPMAP_API_KEY}`
-      );
-      const geoData = await geoRes.json();
-      latitude = geoData.lat;
-      longitude = geoData.lon;
+    // Get coordinates for the city
+    const geoRes = await fetch(
+      `https://api.opentripmap.com/0.1/en/places/geoname?name=${encodeURIComponent(city)}&apikey=${apiKey}`
+    );
+    const geoData = await geoRes.json();
+
+    if (!geoData || !geoData.lat || !geoData.lon) {
+      return { statusCode: 400, body: JSON.stringify({ error: "City not found" }) };
     }
 
-    // Step 2: Get attractions from OpenTripMap
+    // Get attractions list
     const poiRes = await fetch(
-      `https://api.opentripmap.com/0.1/en/places/radius?radius=5000&lon=${longitude}&lat=${latitude}&rate=2&format=json&limit=20&apikey=${process.env.OPENTRIPMAP_API_KEY}`
+      `https://api.opentripmap.com/0.1/en/places/radius?radius=5000&lon=${geoData.lon}&lat=${geoData.lat}&rate=2&limit=20&apikey=${apiKey}`
     );
     const poiData = await poiRes.json();
 
-    const attractions = poiData.map(p => ({
-      xid: p.xid,
-      name: p.name,
-      kinds: p.kinds,
-      dist: p.dist,
-      point: p.point,
+    if (!poiData || !poiData.features) {
+      return { statusCode: 400, body: JSON.stringify({ error: "No attractions found" }) };
+    }
+
+    const attractions = poiData.features.map((p) => ({
+      xid: p.properties.xid,
+      name: p.properties.name,
+      kind: p.properties.kinds,
+      dist: p.properties.dist,
     }));
 
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        city,
-        coordinates: { lat: latitude, lon: longitude },
-        attractions,
-      }),
+      body: JSON.stringify({ city, attractions }),
     };
   } catch (err) {
-    console.error('❌ Error in getCityAttractions:', err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
-    };
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
-}
-
+};

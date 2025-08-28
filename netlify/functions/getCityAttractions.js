@@ -1,5 +1,4 @@
 // /netlify/functions/getCityAttractions.js
-
 import fetch from "node-fetch";
 
 export async function handler(event) {
@@ -35,9 +34,14 @@ export async function handler(event) {
 
     const { lat, lon } = geoData[0];
 
-    // --- Step 2: Query OpenTripMap attractions ---
-    const otmUrl = `https://api.opentripmap.com/0.1/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=20&apikey=${process.env.OPENTRIPMAP_API_KEY}`;
-    const poiRes = await fetch(otmUrl);
+    // --- Step 2: Query OpenTripMap attractions via RapidAPI ---
+    const otmUrl = `https://${process.env.OPENTRIPMAP_RAPID_HOST}/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=20`;
+    const poiRes = await fetch(otmUrl, {
+      headers: {
+        "X-RapidAPI-Key": process.env.OPENTRIPMAP_RAPID_KEY,
+        "X-RapidAPI-Host": process.env.OPENTRIPMAP_RAPID_HOST,
+      },
+    });
     const poiData = await poiRes.json();
     debug.opentripmap = poiData;
 

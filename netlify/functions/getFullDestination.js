@@ -1,7 +1,7 @@
 // /netlify/functions/getFullDestination.js
 import fetch from "node-fetch";
 
-// Import local functions directly (hybrid mode)
+// Import handlers for Hybrid mode
 import { handler as getHotels } from "./getHotels.js";
 import { handler as getRestaurants } from "./getRestaurants.js";
 import { handler as getCityAttractions } from "./getCityAttractions.js";
@@ -9,8 +9,14 @@ import { handler as getWeather } from "./getWeather.js";
 import { handler as getForecast } from "./getForecast.js";
 
 export async function handler(event) {
-  const { city, lat, lon, limit = 5, mode = "hybrid", debug = "false" } =
-    event.queryStringParameters || {};
+  const {
+    city,
+    lat,
+    lon,
+    limit = 5,
+    mode = "hybrid",
+    debug = "false",
+  } = event.queryStringParameters || {};
 
   if (!city) {
     return {
@@ -19,35 +25,37 @@ export async function handler(event) {
     };
   }
 
+  const safeParse = (res) => {
+    try {
+      return res && res.body ? JSON.parse(res.body) : null;
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    // Utility: Safe JSON parsing
-    const safeParse = (res) => {
-      try {
-        return res && res.body ? JSON.parse(res.body) : null;
-      } catch {
-        return null;
-      }
-    };
-
-    // --------- HYBRID MODE (default) ---------
+    // ========== HYBRID MODE ==========
     if (mode === "hybrid") {
-      const [hotelsRes, restaurantsRes, attractionsRes, weatherRes, forecastRes] =
-        await Promise.allSettled([
-          getHotels({ queryStringParameters: { city, lat, lon, limit } }),
-          getRestaurants({ queryStringParameters: { city, lat, lon, limit } }),
-          getCityAttractions({ queryStringParameters: { city, limit } }),
-          getWeather({ queryStringParameters: { city } }),
-          getForecast({ queryStringParameters: { city } }),
-        ]);
+      const [
+        hotelsRes,
+        restaurantsRes,
+        attractionsRes,
+        weatherRes,
+        forecastRes,
+      ] = await Promise.allSettled([
+        getHotels({ queryStringParameters: { city, lat, lon, limit } }),
+        getRestaurants({ queryStringParameters: { city, lat, lon, limit } }),
+        getCityAttractions({ queryStringParameters: { city, limit } }),
+        getWeather({ queryStringParameters: { city } }),
+        getForecast({ queryStringParameters: { city } }),
+      ]);
 
-      // Extract results
       const hotels = safeParse(hotelsRes.value)?.hotels || [];
       const restaurants = safeParse(restaurantsRes.value)?.restaurants || [];
       const attractions = safeParse(attractionsRes.value)?.attractions || [];
       const weather = safeParse(weatherRes.value) || null;
       const forecast = safeParse(forecastRes.value)?.forecast || null;
 
-      // Build response
       const response = {
         city,
         hotels,
@@ -58,29 +66,35 @@ export async function handler(event) {
         mode: "hybrid",
       };
 
-      // Add debug info if requested
       if (debug === "true") {
         response.debug = {
-          hotelsRaw: safeParse(hotelsRes.value),
-          restaurantsRaw: safeParse(restaurantsRes.value),
-          attractionsRaw: safeParse(attractionsRes.value),
-          weatherRaw: safeParse(weatherRes.value),
-          forecastRaw: safeParse(forecastRes.value),
+          hotels: safeParse(hotelsRes.value),
+          restaurants: safeParse(restaurantsRes.value),
+          attractions: safeParse(attractionsRes.value),
+          weather: safeParse(weatherRes.value),
+          forecast: safeParse(forecastRes.value),
         };
       }
 
       return { statusCode: 200, body: JSON.stringify(response) };
     }
 
-    // --------- MODULAR MODE (debug via endpoints) ---------
-    else if (mode === "modular") {
+    // ========== MODULAR MODE ==========
+    if (mode === "modular") {
       const baseUrl =
-        process.env.BASE_URL || "https://wandr-scrape.netlify.app/.netlify/functions";
+        process.env.BASE_URL ||
+        "https://wandr-scrape.netlify.app/.netlify/functions";
 
       const endpoints = {
-        hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
-        restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
-        attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(city)}&limit=${limit}`,
+        hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(
+          city
+        )}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
+        restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(
+          city
+        )}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
+        attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(
+          city
+        )}&limit=${limit}`,
         weather: `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`,
         forecast: `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`,
       };
@@ -95,25 +109,30 @@ export async function handler(event) {
           results[key] = data[key] || data;
           if (debug === "true") debugInfo[`${key}Response`] = data;
         } catch (err) {
+          results[key] = key === "forecast" || key === "weather" ? null : [];
           debugInfo[`${key}Error`] = err.message;
           debugInfo[`${key}Url`] = url;
-          results[key] = key === "forecast" ? null : [];
         }
       }
 
       return {
         statusCode: 200,
-        body: JSON.stringify({ city, ...results, mode: "modular", debug: debug === "true" ? debugInfo : undefined }),
+        body: JSON.stringify({
+          city,
+          ...results,
+          mode: "modular",
+          debug: debug === "true" ? debugInfo : undefined,
+        }),
       };
     }
 
-    // --------- INVALID MODE ---------
-    else {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Invalid mode. Use 'hybrid' or 'modular'." }),
-      };
-    }
+    // ========== INVALID MODE ==========
+    return {
+      statusCode: 400,
+      body: JSON.stringify({
+        error: "Invalid mode. Use 'hybrid' or 'modular'.",
+      }),
+    };
   } catch (err) {
     return {
       statusCode: 500,

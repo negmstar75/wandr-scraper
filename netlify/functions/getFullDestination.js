@@ -17,89 +17,112 @@ export async function handler(event) {
     let attractions = [];
     let weather = null;
     let forecast = null;
+    let debug = {}; // 👈 add debug info
 
-    // ✅ Modular Mode (calls your own endpoints)
+    // ✅ Modular Mode (calls your other endpoints)
     if (mode === "modular") {
       const baseUrl =
         process.env.BASE_URL ||
         "https://wandr-scrape.netlify.app/.netlify/functions";
 
+      debug.baseUrl = baseUrl;
+
       // Hotels
       try {
-        const hotelsRes = await fetch(
-          `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&limit=${limit}`
-        );
-        const hotelsJson = await hotelsRes.json();
-        hotels = hotelsJson.hotels || [];
+        const url = `${baseUrl}/getHotels?city=${encodeURIComponent(
+          city
+        )}&limit=${limit}`;
+        debug.hotelsUrl = url;
+
+        const res = await fetch(url);
+        const json = await res.json();
+        debug.hotelsResponse = json;
+        hotels = json.hotels || [];
       } catch (err) {
+        debug.hotelsError = err.message;
         hotels = [];
       }
 
       // Restaurants
       try {
-        const restRes = await fetch(
-          `${baseUrl}/getRestaurants?city=${encodeURIComponent(
-            city
-          )}&limit=${limit}`
-        );
-        const restJson = await restRes.json();
-        restaurants = restJson.restaurants || [];
+        const url = `${baseUrl}/getRestaurants?city=${encodeURIComponent(
+          city
+        )}&limit=${limit}`;
+        debug.restaurantsUrl = url;
+
+        const res = await fetch(url);
+        const json = await res.json();
+        debug.restaurantsResponse = json;
+        restaurants = json.restaurants || [];
       } catch (err) {
+        debug.restaurantsError = err.message;
         restaurants = [];
       }
 
       // Attractions
       try {
-        const attrRes = await fetch(
-          `${baseUrl}/getCityAttractions?city=${encodeURIComponent(
-            city
-          )}&limit=${limit}`
-        );
-        const attrJson = await attrRes.json();
-        attractions = attrJson.attractions || [];
+        const url = `${baseUrl}/getCityAttractions?city=${encodeURIComponent(
+          city
+        )}&limit=${limit}`;
+        debug.attractionsUrl = url;
+
+        const res = await fetch(url);
+        const json = await res.json();
+        debug.attractionsResponse = json;
+        attractions = json.attractions || [];
       } catch (err) {
+        debug.attractionsError = err.message;
         attractions = [];
       }
 
       // Weather
       try {
-        const weatherRes = await fetch(
-          `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`
-        );
-        const weatherJson = await weatherRes.json();
-        weather = weatherJson || null;
+        const url = `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`;
+        debug.weatherUrl = url;
+
+        const res = await fetch(url);
+        const json = await res.json();
+        debug.weatherResponse = json;
+        weather = json || null;
       } catch (err) {
+        debug.weatherError = err.message;
         weather = null;
       }
 
       // Forecast
       try {
-        const forecastRes = await fetch(
-          `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`
-        );
-        const forecastJson = await forecastRes.json();
-        forecast = forecastJson.forecast || null;
+        const url = `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`;
+        debug.forecastUrl = url;
+
+        const res = await fetch(url);
+        const json = await res.json();
+        debug.forecastResponse = json;
+        forecast = json.forecast || null;
       } catch (err) {
+        debug.forecastError = err.message;
         forecast = null;
       }
 
       return {
         statusCode: 200,
-        body: JSON.stringify({
-          city,
-          hotels,
-          restaurants,
-          attractions,
-          weather,
-          forecast,
-          mode: "modular",
-        }),
+        body: JSON.stringify(
+          {
+            city,
+            hotels,
+            restaurants,
+            attractions,
+            weather,
+            forecast,
+            mode: "modular",
+            debug, // 👈 now included
+          },
+          null,
+          2
+        ),
       };
     }
 
-    // ✅ Monolithic Mode (direct API calls inline)
-    // 👉 You can leave this as a fallback, but since we’ve modularized everything,
-    // most of your usage will be modular.
+    // 👇 fallback if not modular
     return {
       statusCode: 200,
       body: JSON.stringify({

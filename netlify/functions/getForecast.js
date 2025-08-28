@@ -1,73 +1,61 @@
-// /netlify/functions/getForecast.js
 import fetch from "node-fetch";
 
 export async function handler(event) {
+  const { city } = event.queryStringParameters;
+
+  if (!city) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: "City is required" }),
+    };
+  }
+
   try {
-    const { city, country } = event.queryStringParameters;
+    const apiKey = process.env.OPENWEATHER_KEY;
 
-    if (!city) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing city parameter" }),
-      };
-    }
-
-    const WEATHER_API_KEY = process.env.OPENWEATHERMAP_API_KEY;
-
-    if (!WEATHER_API_KEY) {
+    if (!apiKey) {
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: "Missing OpenWeatherMap API key" }),
+        body: JSON.stringify({
+          error: "Missing OpenWeatherMap API key",
+          debug: {
+            envKeys: Object.keys(process.env), // shows what keys are available
+          },
+        }),
       };
     }
 
-    // Build request URL
-    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(
-      city + (country ? "," + country : "")
-    )}&appid=${WEATHER_API_KEY}&units=metric`;
+    const url = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(
+      city
+    )}&appid=${apiKey}&units=metric`;
 
-    const res = await fetch(forecastUrl);
+    const res = await fetch(url);
     const data = await res.json();
 
     if (data.cod !== "200") {
       return {
-        statusCode: 404,
-        body: JSON.stringify({ error: data.message || "City not found" }),
+        statusCode: 500,
+        body: JSON.stringify({ error: data.message, debug: data }),
       };
     }
 
-    // Group forecast into days
-    const days = {};
-    data.list.forEach((item) => {
-      const date = item.dt_txt.split(" ")[0]; // YYYY-MM-DD
-      if (!days[date]) {
-        days[date] = [];
-      }
-      days[date].push({
-        time: item.dt_txt,
-        temp: item.main.temp,
-        feels_like: item.main.feels_like,
-        humidity: item.main.humidity,
-        condition: item.weather[0].description,
-        icon: `https://openweathermap.org/img/wn/${item.weather[0].icon}.png`,
-        wind_speed: item.wind.speed,
-      });
+    // Group forecast into daily summaries (since free tier gives 3h intervals)
+    const grouped = {};
+    data.list.forEach((entry) => {
+      const date = entry.dt_txt.split(" ")[0];
+      if (!grouped[date]) grouped[date] = [];
+      grouped[date].push(entry);
     });
 
-    // Convert to array with daily averages
-    const forecast = Object.entries(days).map(([date, items]) => {
-      const avgTemp =
-        items.reduce((sum, i) => sum + i.temp, 0) / items.length;
-      const avgHumidity =
-        items.reduce((sum, i) => sum + i.humidity, 0) / items.length;
+    const daily = Object.entries(grouped).map(([date, entries]) => {
+      const temps = entries.map((e) => e.main.temp);
+      const descriptions = entries.map((e) => e.weather[0].description);
 
       return {
         date,
-        avgTemp: avgTemp.toFixed(1),
-        avgHumidity: avgHumidity.toFixed(0),
-        condition: items[0].condition,
-        icon: items[0].icon,
-        details: items, // keep full 3-hour breakdown for frontend
+        temp_min: Math.min(...temps),
+        temp_max: Math.max(...temps),
+        description: descriptions[0], // just take the first description
       };
     });
 
@@ -75,8 +63,8 @@ export async function handler(event) {
       statusCode: 200,
       body: JSON.stringify({
         city: data.city.name,
-        country: data.city.country,
-        forecast,
+        forecast: daily,
+        debug: { url }, // request URL for debugging
       }),
     };
   } catch (err) {

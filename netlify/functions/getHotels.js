@@ -2,82 +2,89 @@
 import fetch from "node-fetch";
 
 export async function handler(event) {
+  const { city, lat, lon, limit = 10, debug = "false" } =
+    event.queryStringParameters || {};
+
+  if (!city && (!lat || !lon)) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: "City or lat/lon is required" }),
+    };
+  }
+
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) {
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Missing Google Places API key" }),
+    };
+  }
+
+  let finalLat = lat;
+  let finalLon = lon;
+  const debugInfo = {};
+
   try {
-    const { city, lat, lon } = event.queryStringParameters;
-
-    if (!lat || !lon) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing lat/lon params" }),
-      };
-    }
-
-    const GOOGLE_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
-    const FOURSQUARE_KEY = process.env.FOURSQUARE_API_KEY;
-
-    let hotels = [];
-
-    // ---------- 1. Try Google Places ----------
-    if (GOOGLE_API_KEY) {
-      const googleUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lon}&radius=5000&type=lodging&key=${GOOGLE_API_KEY}`;
-      const googleRes = await fetch(googleUrl);
-      const googleData = await googleRes.json();
-
-      if (googleData.results && googleData.results.length > 0) {
-        hotels = googleData.results.map((h) => ({
-          id: h.place_id,
-          name: h.name,
-          description: h.vicinity || "",
-          rating: h.rating || null,
-          categories: h.types || ["hotel"],
-          photos: h.photos
-            ? h.photos.map(
-                (p) =>
-                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${GOOGLE_API_KEY}`
-              )
-            : [],
-          url: h.business_status ? `https://maps.google.com/?q=${encodeURIComponent(h.name)}` : "",
-          lat: h.geometry?.location?.lat,
-          lon: h.geometry?.location?.lng,
-        }));
-      }
-    }
-
-    // ---------- 2. Fallback to Foursquare ----------
-    if (hotels.length === 0 && FOURSQUARE_KEY) {
-      // Foursquare category for hotels = 19014
-      const fsqUrl = `https://api.foursquare.com/v3/places/search?ll=${lat},${lon}&radius=5000&categories=19014&limit=20`;
-      const fsqRes = await fetch(fsqUrl, {
-        headers: { Authorization: FOURSQUARE_KEY },
+    // Step 1: If no lat/lon, geocode city
+    if ((!finalLat || !finalLon) && city) {
+      const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
+        city
+      )}&format=json&limit=1`;
+      const geoRes = await fetch(nominatimUrl, {
+        headers: { "User-Agent": "WandrApp/1.0" },
       });
-      const fsqData = await fsqRes.json();
+      const geoData = await geoRes.json();
+      debugInfo.nominatim = geoData;
 
-      if (fsqData.results && fsqData.results.length > 0) {
-        hotels = fsqData.results.map((h) => ({
-          id: h.fsq_id,
-          name: h.name,
-          description: h.location?.formatted_address || "",
-          rating: null, // Foursquare free tier doesn’t return ratings
-          categories: h.categories?.map((c) => c.name.toLowerCase()) || ["hotel"],
-          photos: [], // could add later from Foursquare photos API
-          url: h.link || "",
-          lat: h.geocodes?.main?.latitude,
-          lon: h.geocodes?.main?.longitude,
-        }));
+      if (geoData?.[0]) {
+        finalLat = geoData[0].lat;
+        finalLon = geoData[0].lon;
       }
     }
+
+    // Step 2: Google Places
+    let url;
+    if (finalLat && finalLon) {
+      url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?keyword=hotel&location=${finalLat},${finalLon}&radius=5000&key=${GOOGLE_KEY}`;
+    } else {
+      url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=hotels+in+${encodeURIComponent(
+        city
+      )}&key=${GOOGLE_KEY}`;
+    }
+
+    const res = await fetch(url);
+    const data = await res.json();
+    debugInfo.google = data;
+
+    const hotels = (data.results || []).slice(0, limit).map((h) => ({
+      id: h.place_id,
+      source: "google",
+      name: h.name || null,
+      rating: h.rating || null,
+      address: h.formatted_address || h.vicinity || null,
+      categories: h.types || [],
+      photos: h.photos
+        ? h.photos.map(
+            (ph) =>
+              `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${GOOGLE_KEY}`
+          )
+        : [],
+      lat: h.geometry?.location?.lat,
+      lon: h.geometry?.location?.lng,
+    }));
 
     return {
       statusCode: 200,
       body: JSON.stringify({
         city,
         hotels,
+        debug: debug === "true" ? debugInfo : undefined,
       }),
     };
   } catch (err) {
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({ error: err.message, debug: debugInfo }),
     };
   }
 }

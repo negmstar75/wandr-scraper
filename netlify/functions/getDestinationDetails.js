@@ -1,13 +1,14 @@
 // /netlify/functions/getDestinationDetails.js
+
 import fetch from "node-fetch";
 
 export async function handler(event) {
-  const { xid, place_id } = event.queryStringParameters;
+  const { id, source } = event.queryStringParameters;
 
-  if (!xid && !place_id) {
+  if (!id || !source) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: "xid (OTM) or place_id (Google) is required" }),
+      body: JSON.stringify({ error: "Both 'id' and 'source' are required" }),
     };
   }
 
@@ -15,66 +16,85 @@ export async function handler(event) {
     let details = {};
     let debug = {};
 
-    // --- Case 1: OpenTripMap xid (via RapidAPI) ---
-    if (xid) {
-      const otmUrl = `https://${process.env.OPENTRIPMAP_RAPID_HOST}/en/places/xid/${xid}`;
-      const otmRes = await fetch(otmUrl, {
+    // --- Case 1: OpenTripMap via RapidAPI ---
+    if (source === "opentripmap") {
+      const otmUrl = `https://opentripmap-places-v1.p.rapidapi.com/en/places/xid/${id}`;
+      const res = await fetch(otmUrl, {
         headers: {
-          "X-RapidAPI-Key": process.env.OPENTRIPMAP_RAPID_KEY,
-          "X-RapidAPI-Host": process.env.OPENTRIPMAP_RAPID_HOST,
+          "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
+          "X-RapidAPI-Host": "opentripmap-places-v1.p.rapidapi.com",
         },
       });
-      const otmData = await otmRes.json();
-      debug.opentripmap = otmData;
+      const data = await res.json();
+      debug.opentripmap = data;
 
-      if (!otmData.error) {
-        details = {
-          id: otmData.xid,
-          name: otmData.name || null,
-          description: otmData.wikipedia_extracts?.text || otmData.info?.descr || null,
-          url: otmData.url || otmData.wikipedia || null,
-          lat: otmData.point?.lat || null,
-          lon: otmData.point?.lon || null,
-          address: otmData.address || null,
-          categories: otmData.kinds ? otmData.kinds.split(",") : [],
-          photos: otmData.preview ? [otmData.preview.source] : [],
+      if (!res.ok) {
+        return {
+          statusCode: res.status,
+          body: JSON.stringify({
+            error: `OpenTripMap error (${res.status})`,
+            debug,
+          }),
         };
       }
+
+      details = {
+        id: data.xid,
+        source: "opentripmap",
+        name: data.name || null,
+        description: data.wikipedia_extracts?.text || data.info?.descr || null,
+        rating: null, // OTM doesn’t provide ratings
+        categories: data.kinds ? data.kinds.split(",") : [],
+        photos: data.preview ? [data.preview.source] : [],
+        url: data.otm || data.wikipedia || null,
+        lat: data.point?.lat,
+        lon: data.point?.lon,
+      };
     }
 
-    // --- Case 2: Google Place Details fallback ---
-    if (!details.name && place_id && process.env.GOOGLE_PLACES_API_KEY) {
-      const googleUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&fields=name,rating,formatted_address,geometry,types,photos,url,editorial_summary&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+    // --- Case 2: Google Places ---
+    else if (source === "google" && process.env.GOOGLE_PLACES_API_KEY) {
+      const googleUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${id}&fields=name,rating,formatted_address,geometry,types,url,photos,editorial_summary&key=${process.env.GOOGLE_PLACES_API_KEY}`;
       const gRes = await fetch(googleUrl);
       const gData = await gRes.json();
       debug.google = gData;
 
-      if (gData.result) {
-        const g = gData.result;
-        details = {
-          id: g.place_id,
-          name: g.name || null,
-          description: g.editorial_summary?.overview || null,
-          url: g.url || null,
-          lat: g.geometry?.location?.lat || null,
-          lon: g.geometry?.location?.lng || null,
-          address: g.formatted_address || null,
-          categories: g.types || [],
-          rating: g.rating || null,
-          photos: g.photos
-            ? g.photos.map(
-                (ph) =>
-                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
-              )
-            : [],
+      if (!gRes.ok || gData.status !== "OK") {
+        return {
+          statusCode: gRes.status,
+          body: JSON.stringify({
+            error: `Google Places error: ${gData.status}`,
+            debug,
+          }),
         };
       }
+
+      const p = gData.result;
+      details = {
+        id,
+        source: "google",
+        name: p.name || null,
+        description: p.editorial_summary?.overview || null,
+        rating: p.rating || null,
+        categories: p.types || [],
+        photos: p.photos
+          ? p.photos.map(
+              (ph) =>
+                `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
+            )
+          : [],
+        url: p.url || null,
+        address: p.formatted_address || null,
+        lat: p.geometry?.location?.lat,
+        lon: p.geometry?.location?.lng,
+      };
     }
 
-    if (!details.name) {
+    // --- Unknown Source ---
+    else {
       return {
-        statusCode: 404,
-        body: JSON.stringify({ error: "No details found", debug }),
+        statusCode: 400,
+        body: JSON.stringify({ error: "Invalid source (use 'opentripmap' or 'google')" }),
       };
     }
 

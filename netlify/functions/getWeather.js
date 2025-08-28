@@ -1,62 +1,55 @@
-// /netlify/functions/getWeather.js
 import fetch from "node-fetch";
 
 export async function handler(event) {
+  const { city } = event.queryStringParameters;
+
+  if (!city) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: "City is required" }),
+    };
+  }
+
   try {
-    const { city, country } = event.queryStringParameters;
+    const apiKey = process.env.OPENWEATHER_KEY;
 
-    if (!city) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing city parameter" }),
-      };
-    }
-
-    const WEATHER_API_KEY = process.env.OPENWEATHERMAP_API_KEY;
-
-    if (!WEATHER_API_KEY) {
+    if (!apiKey) {
       return {
         statusCode: 500,
-        body: JSON.stringify({ error: "Missing OpenWeatherMap API key" }),
+        body: JSON.stringify({
+          error: "Missing OpenWeatherMap API key",
+          debug: {
+            envKeys: Object.keys(process.env), // 🔍 shows what keys Netlify exposes
+          },
+        }),
       };
     }
 
-    // Build request URL
-    const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
-      city + (country ? "," + country : "")
-    )}&appid=${WEATHER_API_KEY}&units=metric`;
+    const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
+      city
+    )}&appid=${apiKey}&units=metric`;
 
-    // Fetch weather
-    const res = await fetch(weatherUrl);
+    const res = await fetch(url);
     const data = await res.json();
 
     if (data.cod !== 200) {
       return {
-        statusCode: 404,
-        body: JSON.stringify({ error: data.message || "City not found" }),
+        statusCode: 500,
+        body: JSON.stringify({ error: data.message, debug: data }),
       };
     }
 
-    // Format response
-    const weather = {
-      city: data.name,
-      country: data.sys?.country || "",
-      temperature: data.main?.temp,
-      feels_like: data.main?.feels_like,
-      humidity: data.main?.humidity,
-      condition: data.weather?.[0]?.description || "",
-      icon: data.weather?.[0]?.icon
-        ? `https://openweathermap.org/img/wn/${data.weather[0].icon}@2x.png`
-        : null,
-      wind_speed: data.wind?.speed,
-      clouds: data.clouds?.all,
-      sunrise: data.sys?.sunrise,
-      sunset: data.sys?.sunset,
-    };
-
     return {
       statusCode: 200,
-      body: JSON.stringify(weather),
+      body: JSON.stringify({
+        city: data.name,
+        temp: data.main.temp,
+        description: data.weather[0].description,
+        feels_like: data.main.feels_like,
+        humidity: data.main.humidity,
+        wind_speed: data.wind.speed,
+        debug: { url }, // 🔍 shows request URL
+      }),
     };
   } catch (err) {
     return {

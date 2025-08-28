@@ -22,8 +22,8 @@ export async function handler(event) {
     // ✅ Modular Mode (calls your other endpoints)
     if (mode === "modular") {
       const baseUrl =
-        process.env.BASE_URL ||
-        "https://wandr-scrape.netlify.app/.netlify/functions";
+  process.env.BASE_URL ||
+  "https://wandr-scrape.netlify.app/.netlify/functions";
 
       debug.baseUrl = baseUrl;
 

@@ -1,5 +1,4 @@
 // /netlify/functions/getDestinationDetails.js
-
 import fetch from "node-fetch";
 
 export async function handler(event) {
@@ -8,60 +7,71 @@ export async function handler(event) {
   if (!xid && !place_id) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: "Please provide xid (OpenTripMap) or place_id (Google)" }),
+      body: JSON.stringify({ error: "xid (OTM) or place_id (Google) is required" }),
     };
   }
 
   try {
-    let standardized = null;
+    let details = {};
     let debug = {};
 
-    // --- 1. Try OpenTripMap if xid provided ---
+    // --- Case 1: OpenTripMap xid (via RapidAPI) ---
     if (xid) {
-      const url = `https://api.opentripmap.com/0.1/en/places/xid/${xid}?apikey=${process.env.OPENTRIPMAP_API_KEY}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      debug.opentripmap = data;
+      const otmUrl = `https://${process.env.OPENTRIPMAP_RAPID_HOST}/en/places/xid/${xid}`;
+      const otmRes = await fetch(otmUrl, {
+        headers: {
+          "X-RapidAPI-Key": process.env.OPENTRIPMAP_RAPID_KEY,
+          "X-RapidAPI-Host": process.env.OPENTRIPMAP_RAPID_HOST,
+        },
+      });
+      const otmData = await otmRes.json();
+      debug.opentripmap = otmData;
 
-      if (data && !data.error) {
-        standardized = {
-          name: data.name || null,
-          address: data.address ? Object.values(data.address).join(", ") : null,
-          description: data.wikipedia_extracts?.text || data.info?.descr || null,
-          rating: null, // OTM has no ratings
-          categories: data.kinds ? data.kinds.split(",") : [],
-          photos: data.preview?.source ? [data.preview.source] : [],
-          url: data.wikipedia || data.url || null,
+      if (!otmData.error) {
+        details = {
+          id: otmData.xid,
+          name: otmData.name || null,
+          description: otmData.wikipedia_extracts?.text || otmData.info?.descr || null,
+          url: otmData.url || otmData.wikipedia || null,
+          lat: otmData.point?.lat || null,
+          lon: otmData.point?.lon || null,
+          address: otmData.address || null,
+          categories: otmData.kinds ? otmData.kinds.split(",") : [],
+          photos: otmData.preview ? [otmData.preview.source] : [],
         };
       }
     }
 
-    // --- 2. Fallback to Google if no xid or no usable data ---
-    if ((!standardized || !standardized.name) && place_id) {
-      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      debug.google = data;
+    // --- Case 2: Google Place Details fallback ---
+    if (!details.name && place_id && process.env.GOOGLE_PLACES_API_KEY) {
+      const googleUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&fields=name,rating,formatted_address,geometry,types,photos,url,editorial_summary&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+      const gRes = await fetch(googleUrl);
+      const gData = await gRes.json();
+      debug.google = gData;
 
-      if (data.result) {
-        standardized = {
-          name: data.result.name || null,
-          address: data.result.formatted_address || null,
-          description: data.result.editorial_summary?.overview || null,
-          rating: data.result.rating || null,
-          categories: data.result.types || [],
-          photos: data.result.photos
-            ? data.result.photos.map(
-                (p) =>
-                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
+      if (gData.result) {
+        const g = gData.result;
+        details = {
+          id: g.place_id,
+          name: g.name || null,
+          description: g.editorial_summary?.overview || null,
+          url: g.url || null,
+          lat: g.geometry?.location?.lat || null,
+          lon: g.geometry?.location?.lng || null,
+          address: g.formatted_address || null,
+          categories: g.types || [],
+          rating: g.rating || null,
+          photos: g.photos
+            ? g.photos.map(
+                (ph) =>
+                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
               )
             : [],
-          url: data.result.url || null,
         };
       }
     }
 
-    if (!standardized) {
+    if (!details.name) {
       return {
         statusCode: 404,
         body: JSON.stringify({ error: "No details found", debug }),
@@ -70,10 +80,7 @@ export async function handler(event) {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({
-        details: standardized,
-        debug, // keep raw data here
-      }),
+      body: JSON.stringify({ details, debug }),
     };
   } catch (err) {
     return {

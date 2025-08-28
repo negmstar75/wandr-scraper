@@ -1,9 +1,8 @@
-// /netlify/functions/getCityAttractions.js
-
 import fetch from "node-fetch";
 
 export async function handler(event) {
-  const { city, country } = event.queryStringParameters;
+  const { city, country, limit = 10, debug = "false" } =
+    event.queryStringParameters || {};
 
   if (!city) {
     return {
@@ -12,67 +11,72 @@ export async function handler(event) {
     };
   }
 
-  try {
-    let standardized = [];
-    let debug = {};
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  const RAPID_KEY = process.env.RAPIDAPI_OPENTRIPMAP_KEY; // for OTM RapidAPI
+  const debugInfo = {};
+  let standardized = [];
 
-    // --- Step 1: Get city coordinates (Nominatim) ---
+  try {
+    // --- Step 1: Get city coordinates ---
     const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
       city
     )}${country ? "&country=" + encodeURIComponent(country) : ""}&format=json&limit=1`;
 
     const geoRes = await fetch(nominatimUrl, {
-      headers: { "User-Agent": process.env.WIKIMEDIA_USER_AGENT || "WandrApp/1.0" },
+      headers: { "User-Agent": "WandrApp/1.0" },
     });
     const geoData = await geoRes.json();
-    debug.nominatim = geoData;
+    debugInfo.nominatim = geoData;
 
-    if (!geoData || !geoData[0]) {
+    if (!geoData?.[0]) {
       return {
         statusCode: 404,
-        body: JSON.stringify({ error: "City not found", debug }),
+        body: JSON.stringify({ error: "City not found", debug: debug === "true" ? debugInfo : undefined }),
       };
     }
 
     const { lat, lon } = geoData[0];
 
-    // --- Step 2: Query OpenTripMap (via RapidAPI) ---
-    const otmUrl = `https://opentripmap-places-v1.p.rapidapi.com/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=20`;
-    const poiRes = await fetch(otmUrl, {
-      headers: {
-        "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "opentripmap-places-v1.p.rapidapi.com",
-      },
-    });
-    const poiData = await poiRes.json();
-    debug.opentripmap = poiData;
+    // --- Step 2: Try OpenTripMap via RapidAPI ---
+    if (RAPID_KEY) {
+      const otmUrl = `https://opentripmap-places-v1.p.rapidapi.com/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=${limit}`;
+      const poiRes = await fetch(otmUrl, {
+        headers: {
+          "X-RapidAPI-Key": RAPID_KEY,
+          "X-RapidAPI-Host": "opentripmap-places-v1.p.rapidapi.com",
+        },
+      });
 
-    if (poiData && poiData.features) {
-      standardized = poiData.features.map((f) => ({
-        id: f.properties.xid,
-        source: "opentripmap",
-        name: f.properties.name || null,
-        description: null, // enrich via getDestinationDetails
-        rating: null,
-        categories: f.properties.kinds ? f.properties.kinds.split(",") : [],
-        photos: [],
-        url: null,
-        lat: f.geometry.coordinates[1],
-        lon: f.geometry.coordinates[0],
-      }));
+      const poiData = await poiRes.json();
+      debugInfo.opentripmap = poiData;
+
+      if (poiData?.features) {
+        standardized = poiData.features.map((f) => ({
+          id: f.properties.xid,
+          source: "opentripmap",
+          name: f.properties.name || null,
+          description: null,
+          rating: null,
+          categories: f.properties.kinds ? f.properties.kinds.split(",") : [],
+          photos: [],
+          url: null,
+          lat: f.geometry.coordinates[1],
+          lon: f.geometry.coordinates[0],
+        }));
+      }
     }
 
-    // --- Step 3: Fallback to Google if OTM empty ---
-    if (standardized.length === 0 && process.env.GOOGLE_PLACES_API_KEY) {
+    // --- Step 3: Google fallback if no results ---
+    if (standardized.length === 0 && GOOGLE_KEY) {
       const googleUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=attractions+in+${encodeURIComponent(
         city
-      )}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
+      )}&key=${GOOGLE_KEY}`;
       const gRes = await fetch(googleUrl);
       const gData = await gRes.json();
-      debug.google = gData;
+      debugInfo.google = gData;
 
-      if (gData.results) {
-        standardized = gData.results.map((p) => ({
+      if (gData?.results) {
+        standardized = gData.results.slice(0, limit).map((p) => ({
           id: p.place_id,
           source: "google",
           name: p.name || null,
@@ -82,7 +86,7 @@ export async function handler(event) {
           photos: p.photos
             ? p.photos.map(
                 (ph) =>
-                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${process.env.GOOGLE_PLACES_API_KEY}`
+                  `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${ph.photo_reference}&key=${GOOGLE_KEY}`
               )
             : [],
           url: p.url || null,
@@ -97,13 +101,13 @@ export async function handler(event) {
       body: JSON.stringify({
         city,
         attractions: standardized,
-        debug,
+        debug: debug === "true" ? debugInfo : undefined,
       }),
     };
   } catch (err) {
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({ error: err.message, debug: debug === "true" ? debugInfo : undefined }),
     };
   }
 }

@@ -1,4 +1,5 @@
 // /netlify/functions/getCityAttractions.js
+
 import fetch from "node-fetch";
 
 export async function handler(event) {
@@ -19,6 +20,7 @@ export async function handler(event) {
     const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
       city
     )}${country ? "&country=" + encodeURIComponent(country) : ""}&format=json&limit=1`;
+
     const geoRes = await fetch(nominatimUrl, {
       headers: { "User-Agent": process.env.WIKIMEDIA_USER_AGENT || "WandrApp/1.0" },
     });
@@ -34,12 +36,12 @@ export async function handler(event) {
 
     const { lat, lon } = geoData[0];
 
-    // --- Step 2: Query OpenTripMap attractions via RapidAPI ---
-    const otmUrl = `https://${process.env.OPENTRIPMAP_RAPID_HOST}/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=20`;
+    // --- Step 2: Query OpenTripMap (via RapidAPI) ---
+    const otmUrl = `https://opentripmap-places-v1.p.rapidapi.com/en/places/radius?radius=10000&lon=${lon}&lat=${lat}&rate=2&limit=20`;
     const poiRes = await fetch(otmUrl, {
       headers: {
-        "X-RapidAPI-Key": process.env.OPENTRIPMAP_RAPID_KEY,
-        "X-RapidAPI-Host": process.env.OPENTRIPMAP_RAPID_HOST,
+        "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "opentripmap-places-v1.p.rapidapi.com",
       },
     });
     const poiData = await poiRes.json();
@@ -48,18 +50,19 @@ export async function handler(event) {
     if (poiData && poiData.features) {
       standardized = poiData.features.map((f) => ({
         id: f.properties.xid,
+        source: "opentripmap",
         name: f.properties.name || null,
-        description: null, // can be enriched via getDestinationDetails.js
-        rating: null, // OTM doesn’t give ratings
+        description: null, // enrich via getDestinationDetails
+        rating: null,
         categories: f.properties.kinds ? f.properties.kinds.split(",") : [],
-        photos: [], // no photos in list response
+        photos: [],
         url: null,
         lat: f.geometry.coordinates[1],
         lon: f.geometry.coordinates[0],
       }));
     }
 
-    // --- Step 3: Fallback Google if nothing from OTM ---
+    // --- Step 3: Fallback to Google if OTM empty ---
     if (standardized.length === 0 && process.env.GOOGLE_PLACES_API_KEY) {
       const googleUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=attractions+in+${encodeURIComponent(
         city
@@ -71,6 +74,7 @@ export async function handler(event) {
       if (gData.results) {
         standardized = gData.results.map((p) => ({
           id: p.place_id,
+          source: "google",
           name: p.name || null,
           description: p.editorial_summary?.overview || null,
           rating: p.rating || null,

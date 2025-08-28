@@ -1,7 +1,6 @@
-// /netlify/functions/getFullDestination.js
 import fetch from "node-fetch";
 
-// Import handlers for Hybrid mode
+// Local imports (hybrid mode)
 import { handler as getHotels } from "./getHotels.js";
 import { handler as getRestaurants } from "./getRestaurants.js";
 import { handler as getCityAttractions } from "./getCityAttractions.js";
@@ -9,134 +8,129 @@ import { handler as getWeather } from "./getWeather.js";
 import { handler as getForecast } from "./getForecast.js";
 
 export async function handler(event) {
-  const {
-    city,
-    lat,
-    lon,
-    limit = 5,
-    mode = "hybrid",
-    debug = "false",
-  } = event.queryStringParameters || {};
+  const { city, country, lat, lon, limit = 5, mode = "hybrid", debug = "false" } =
+    event.queryStringParameters || {};
 
-  if (!city) {
+  if (!city && (!lat || !lon)) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: "City is required" }),
+      body: JSON.stringify({
+        error: "City or lat/lon is required",
+      }),
     };
   }
 
-  const safeParse = (res) => {
-    try {
-      return res && res.body ? JSON.parse(res.body) : null;
-    } catch {
-      return null;
-    }
-  };
+  const debugInfo = {};
+  let resolvedLat = lat;
+  let resolvedLon = lon;
 
   try {
-    // ========== HYBRID MODE ==========
-    if (mode === "hybrid") {
-      const [
-        hotelsRes,
-        restaurantsRes,
-        attractionsRes,
-        weatherRes,
-        forecastRes,
-      ] = await Promise.allSettled([
-        getHotels({ queryStringParameters: { city, lat, lon, limit } }),
-        getRestaurants({ queryStringParameters: { city, lat, lon, limit } }),
-        getCityAttractions({ queryStringParameters: { city, limit } }),
-        getWeather({ queryStringParameters: { city } }),
-        getForecast({ queryStringParameters: { city } }),
-      ]);
+    // --- Step 1: Get coordinates if not provided ---
+    if ((!resolvedLat || !resolvedLon) && city) {
+      const geoUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
+        city
+      )}${country ? "&country=" + encodeURIComponent(country) : ""}&format=json&limit=1`;
+      const geoRes = await fetch(geoUrl, {
+        headers: { "User-Agent": "WandrApp/1.0" },
+      });
+      const geoData = await geoRes.json();
+      debugInfo.nominatim = geoData;
 
-      const hotels = safeParse(hotelsRes.value)?.hotels || [];
-      const restaurants = safeParse(restaurantsRes.value)?.restaurants || [];
-      const attractions = safeParse(attractionsRes.value)?.attractions || [];
-      const weather = safeParse(weatherRes.value) || null;
-      const forecast = safeParse(forecastRes.value)?.forecast || null;
-
-      const response = {
-        city,
-        hotels,
-        restaurants,
-        attractions,
-        weather,
-        forecast,
-        mode: "hybrid",
-      };
-
-      if (debug === "true") {
-        response.debug = {
-          hotels: safeParse(hotelsRes.value),
-          restaurants: safeParse(restaurantsRes.value),
-          attractions: safeParse(attractionsRes.value),
-          weather: safeParse(weatherRes.value),
-          forecast: safeParse(forecastRes.value),
-        };
+      if (geoData?.[0]) {
+        resolvedLat = geoData[0].lat;
+        resolvedLon = geoData[0].lon;
       }
-
-      return { statusCode: 200, body: JSON.stringify(response) };
     }
 
-    // ========== MODULAR MODE ==========
-    if (mode === "modular") {
-      const baseUrl =
-        process.env.BASE_URL ||
-        "https://wandr-scrape.netlify.app/.netlify/functions";
+    // --- Step 2: Decide baseUrl for modular mode ---
+    const baseUrl =
+      process.env.BASE_URL || "https://wandr-scrape.netlify.app/.netlify/functions";
 
-      const endpoints = {
-        hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(
-          city
-        )}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
-        restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(
-          city
-        )}&lat=${lat || ""}&lon=${lon || ""}&limit=${limit}`,
-        attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(
-          city
-        )}&limit=${limit}`,
+    // --- Step 3: Utility wrapper ---
+    async function callHandler(fn, params, label) {
+      try {
+        const res = await fn({ queryStringParameters: params });
+        return JSON.parse(res.body);
+      } catch (err) {
+        debugInfo[`${label}Error`] = err.message;
+        return [];
+      }
+    }
+
+    async function callHttp(url, label) {
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        return data;
+      } catch (err) {
+        debugInfo[`${label}Error`] = err.message;
+        return [];
+      }
+    }
+
+    // --- Step 4: Parallel requests ---
+    let hotels, restaurants, attractions, weather, forecast;
+
+    if (mode === "hybrid") {
+      [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+        callHandler(getHotels, { city, lat: resolvedLat, lon: resolvedLon, limit }, "hotels"),
+        callHandler(getRestaurants, { city, lat: resolvedLat, lon: resolvedLon, limit }, "restaurants"),
+        callHandler(getCityAttractions, { city, country, limit }, "attractions"),
+        callHandler(getWeather, { city, lat: resolvedLat, lon: resolvedLon }, "weather"),
+        callHandler(getForecast, { city, lat: resolvedLat, lon: resolvedLon }, "forecast"),
+      ]);
+    } else {
+      const urls = {
+        hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&lat=${resolvedLat || ""}&lon=${
+          resolvedLon || ""
+        }&limit=${limit}`,
+        restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(city)}&lat=${
+          resolvedLat || ""
+        }&lon=${resolvedLon || ""}&limit=${limit}`,
+        attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(city)}${
+          country ? "&country=" + encodeURIComponent(country) : ""
+        }&limit=${limit}`,
         weather: `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`,
         forecast: `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`,
       };
 
-      const results = {};
-      const debugInfo = { baseUrl };
+      if (debug === "true") debugInfo.urls = urls;
 
-      for (const [key, url] of Object.entries(endpoints)) {
-        try {
-          const res = await fetch(url);
-          const data = await res.json();
-          results[key] = data[key] || data;
-          if (debug === "true") debugInfo[`${key}Response`] = data;
-        } catch (err) {
-          results[key] = key === "forecast" || key === "weather" ? null : [];
-          debugInfo[`${key}Error`] = err.message;
-          debugInfo[`${key}Url`] = url;
-        }
-      }
-
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          city,
-          ...results,
-          mode: "modular",
-          debug: debug === "true" ? debugInfo : undefined,
-        }),
-      };
+      [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+        callHttp(urls.hotels, "hotels"),
+        callHttp(urls.restaurants, "restaurants"),
+        callHttp(urls.attractions, "attractions"),
+        callHttp(urls.weather, "weather"),
+        callHttp(urls.forecast, "forecast"),
+      ]);
     }
 
-    // ========== INVALID MODE ==========
+    // --- Step 5: Standardize outputs ---
+    const response = {
+      city,
+      lat: resolvedLat || null,
+      lon: resolvedLon || null,
+      hotels: hotels?.hotels || hotels || [],
+      restaurants: restaurants?.restaurants || restaurants || [],
+      attractions: attractions?.attractions || attractions || [],
+      weather: weather?.temp ? weather : null,
+      forecast: forecast?.forecast || forecast || null,
+      mode,
+    };
+
+    if (debug === "true") response.debug = debugInfo;
+
     return {
-      statusCode: 400,
-      body: JSON.stringify({
-        error: "Invalid mode. Use 'hybrid' or 'modular'.",
-      }),
+      statusCode: 200,
+      body: JSON.stringify(response),
     };
   } catch (err) {
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
+      body: JSON.stringify({
+        error: err.message,
+        debug: debug === "true" ? debugInfo : undefined,
+      }),
     };
   }
 }

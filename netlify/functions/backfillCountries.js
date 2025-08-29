@@ -25,27 +25,32 @@ function getContinent(country) {
 async function backfillCountries() {
   const { data: rows, error } = await supabase
     .from("destination_cache")
-    .select("id, city, lat, lon, country, continent");
+    .select("id, city, lat, lon, country, region, continent");
 
   if (error) throw error;
 
   const updates = [];
 
   for (const row of rows) {
-    if (row.country && row.continent) continue; // already set
+    if (row.country && row.region && row.continent) continue;
 
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${row.lat}&lon=${row.lon}&format=json&addressdetails=1&accept-language=en`;
     const geo = await fetch(url, { headers: { "User-Agent": "wandr-app" } }).then((r) => r.json());
 
-    const country = geo?.address?.country || null;
-    const continent = country ? getContinent(country) : null;
+    const country = geo?.address?.country || row.country;
+    const region =
+      geo?.address?.state ||
+      geo?.address?.region ||
+      geo?.address?.county ||
+      row.region;
+    const continent = country ? getContinent(country) : row.continent;
 
     const { error: updateErr } = await supabase
       .from("destination_cache")
-      .update({ country, continent })
+      .update({ country, region, continent })
       .eq("id", row.id);
 
-    if (!updateErr) updates.push({ city: row.city, country, continent });
+    if (!updateErr) updates.push({ city: row.city, country, region, continent });
   }
 
   console.log(JSON.stringify({ message: `Backfill complete for ${updates.length} rows`, updates }, null, 2));

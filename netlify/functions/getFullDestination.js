@@ -3,165 +3,162 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-// --- Helper: Get coordinates & English country/region/continent ---
-async function geocodeCity(city) {
+const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
+  auth: { persistSession: false },
+});
+
+// --- Helper: Standardize location (country, code, region, continent) ---
+async function getLocationDetails(city) {
   try {
-    const url = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
-      city
-    )}&format=json&addressdetails=1&limit=1`;
-    console.log("[Geocode] Request:", url);
-
-    const res = await fetch(url, { headers: { "User-Agent": "WandrApp/1.0" } });
-    if (!res.ok) throw new Error(`Geocode HTTP error: ${res.status}`);
-
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
+        city
+      )}&format=json&addressdetails=1&limit=1`
+    );
     const data = await res.json();
-    if (!data || data.length === 0) {
-      console.warn("[Geocode] No results for:", city);
+
+    if (!data || !data[0]) {
+      console.warn(`[getLocationDetails] No results for city: ${city}`);
       return {};
     }
 
-    const item = data[0];
-    const address = item.address || {};
+    const addr = data[0].address || {};
+    const country = addr.country || null;
+    const countryCode = addr.country_code ? addr.country_code.toUpperCase() : null;
+    const region = addr.state || null;
 
-    return {
-      lat: item.lat,
-      lon: item.lon,
-      country: address.country || null,
-      region: address.state || address.region || null,
-      continent: address.continent || null,
-      raw: item,
-    };
+    // Fetch continent from mapping table
+    let continent = null;
+    if (countryCode) {
+      const { data: continentRow, error: continentErr } = await supabase
+        .from("country_continent_map")
+        .select("continent")
+        .eq("country_code", countryCode)
+        .maybeSingle();
+
+      if (continentErr) {
+        console.error("[getLocationDetails] Error fetching continent:", continentErr);
+      } else if (continentRow) {
+        continent = continentRow.continent;
+      }
+    }
+
+    return { country, countryCode, region, continent };
   } catch (err) {
-    console.error("[Geocode] Error:", err.message);
+    console.error("[getLocationDetails] Exception:", err);
     return {};
   }
 }
 
-// --- Helper: Fetch JSON safely ---
-async function safeFetchJson(url, label) {
+// --- Helper: Cache lookup ---
+async function getCachedDestination(city, mode) {
+  const { data, error } = await supabase
+    .from("destination_cache")
+    .select("*")
+    .eq("city", city)
+    .eq("mode", mode)
+    .order("fetched_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[Supabase] Cache fetch error:", error);
+    return null;
+  }
+
+  if (!data) return null;
+
+  // Expiry: 24h
+  const cacheAge = Date.now() - new Date(data.fetched_at).getTime();
+  if (cacheAge > 24 * 60 * 60 * 1000) {
+    console.log(`[Cache] Expired for ${city} (${Math.round(cacheAge / 1000)}s old)`);
+    return null;
+  }
+
+  console.log(`[Cache] Hit for ${city}`);
+  return data;
+}
+
+// --- Helper: Store cache ---
+async function storeDestinationCache(entry) {
   try {
-    console.log(`[Fetch] ${label}:`, url);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const { data, error } = await supabase
+      .from("destination_cache")
+      .upsert(entry, { onConflict: "city,country" })
+      .select();
+
+    if (error) {
+      console.error("[Supabase] Cache insert error:", error);
+    } else {
+      console.log("[Supabase] Cache inserted/updated:", data);
+    }
   } catch (err) {
-    console.error(`[Fetch] ${label} failed:`, err.message);
-    return { error: err.message };
+    console.error("[Supabase] Exception inserting cache:", err);
   }
 }
 
-export async function handler(event) {
+// --- Main handler ---
+export default async (req, res) => {
   try {
-    const params = event.queryStringParameters || {};
-    const city = params.city;
-    const mode = params.mode || "modular";
-    const debug = params.debug === "true";
+    const { city, mode = "modular", debug } = req.query;
 
     if (!city) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing ?city=" }),
-      };
+      return res.status(400).json({ error: "Missing city param" });
     }
 
-    // 1. Check cache first
-    console.log("[Cache] Checking for city:", city);
-    let { data: cached, error: cacheError } = await supabase
-      .from("destination_cache")
-      .select("*")
-      .ilike("city", city)
-      .maybeSingle();
-
-    if (cacheError) {
-      console.error("[Cache] Select error:", cacheError.message);
-    }
-
+    // 1. Try cache
+    const cached = await getCachedDestination(city, mode);
     if (cached) {
-      console.log("[Cache] HIT:", cached.city, cached.country);
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          ...cached,
-          fromCache: true,
-        }),
-      };
+      return res.json({ ...cached, fromCache: true });
     }
 
-    console.log("[Cache] MISS → Fetching live APIs");
+    // 2. Fetch new location details (normalized)
+    const { country, countryCode, region, continent } = await getLocationDetails(city);
 
-    // 2. Geocode city → ensure English country/region/continent
-    const geo = await geocodeCity(city);
-    const { lat, lon, country, region, continent } = geo;
-
-    // 3. Build URLs for modular mode
+    // 3. Fetch external APIs
     const baseUrl = process.env.BASE_URL || "https://wandr-scrape.netlify.app/.netlify/functions";
-
-    const urls = {
-      hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=2`,
-      restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=2`,
-      attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(city)}&limit=2`,
-      weather: `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`,
-      forecast: `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`,
+    const endpoints = {
+      hotels: `${baseUrl}/getHotels?city=${city}&lat=&lon=&limit=2`,
+      restaurants: `${baseUrl}/getRestaurants?city=${city}&lat=&lon=&limit=2`,
+      attractions: `${baseUrl}/getCityAttractions?city=${city}&limit=2`,
+      weather: `${baseUrl}/getWeather?city=${city}`,
+      forecast: `${baseUrl}/getForecast?city=${city}`,
     };
 
-    // 4. Fetch in parallel
     const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
-      safeFetchJson(urls.hotels, "Hotels"),
-      safeFetchJson(urls.restaurants, "Restaurants"),
-      safeFetchJson(urls.attractions, "Attractions"),
-      safeFetchJson(urls.weather, "Weather"),
-      safeFetchJson(urls.forecast, "Forecast"),
+      fetch(endpoints.hotels).then((r) => r.json()).catch(() => null),
+      fetch(endpoints.restaurants).then((r) => r.json()).catch(() => null),
+      fetch(endpoints.attractions).then((r) => r.json()).catch(() => null),
+      fetch(endpoints.weather).then((r) => r.json()).catch(() => null),
+      fetch(endpoints.forecast).then((r) => r.json()).catch(() => null),
     ]);
 
-    // 5. Prepare cache row (English country enforced)
-    const cacheRow = {
+    // 4. Build entry
+    const result = {
       city,
-      country: country || null,
-      region: region || null,
-      continent: continent || null,
-      lat: lat ? parseFloat(lat) : null,
-      lon: lon ? parseFloat(lon) : null,
+      country,
+      country_code: countryCode,
+      region,
+      continent,
       mode,
       hotels,
       restaurants,
       attractions,
       weather,
       forecast,
-      source: ["google", "openweathermap"],
       fetched_at: new Date().toISOString(),
+      source: ["google", "openweathermap"],
+      debug: debug ? { endpoints } : undefined,
     };
 
-    // 6. UPSERT to Supabase
-    console.log("[Cache] UPSERT row:", cacheRow);
+    // 5. Store in cache
+    await storeDestinationCache(result);
 
-    const { data: upsertData, error: upsertError } = await supabase
-      .from("destination_cache")
-      .upsert(cacheRow, { onConflict: ["city", "country"] })
-      .select()
-      .single();
-
-    if (upsertError) {
-      console.error("[Cache] Upsert error:", upsertError.message);
-    } else {
-      console.log("[Cache] Upsert success:", upsertData.city, upsertData.country);
-    }
-
-    // 7. Return final response
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        ...cacheRow,
-        fromCache: false,
-        debug: debug ? { geo, urls } : undefined,
-      }),
-    };
+    // 6. Return response
+    return res.json(result);
   } catch (err) {
-    console.error("[Handler] Fatal error:", err.message);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: "Internal server error", details: err.message }),
-    };
+    console.error("[getFullDestination] Fatal error:", err);
+    return res.status(500).json({ error: "Internal server error", details: err.message });
   }
-}
+};

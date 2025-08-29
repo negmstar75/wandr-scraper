@@ -1,146 +1,167 @@
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-// 🌍 country → continent mapping
-const CONTINENT_MAP = {
-  Asia: ["Japan", "China", "India", "Thailand", "Indonesia", "Vietnam", "Malaysia", "Singapore"],
-  Europe: ["France", "Germany", "Spain", "Italy", "United Kingdom", "Netherlands", "Switzerland"],
-  North_America: ["United States", "Canada", "Mexico"],
-  South_America: ["Brazil", "Argentina", "Chile", "Peru"],
-  Africa: ["South Africa", "Egypt", "Morocco", "Kenya"],
-  Oceania: ["Australia", "New Zealand", "Fiji"]
-};
+// --- Helper: Get coordinates & English country/region/continent ---
+async function geocodeCity(city) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
+      city
+    )}&format=json&addressdetails=1&limit=1`;
+    console.log("[Geocode] Request:", url);
 
-function getContinent(country) {
-  for (const [continent, countries] of Object.entries(CONTINENT_MAP)) {
-    if (countries.includes(country)) return continent;
+    const res = await fetch(url, { headers: { "User-Agent": "WandrApp/1.0" } });
+    if (!res.ok) throw new Error(`Geocode HTTP error: ${res.status}`);
+
+    const data = await res.json();
+    if (!data || data.length === 0) {
+      console.warn("[Geocode] No results for:", city);
+      return {};
+    }
+
+    const item = data[0];
+    const address = item.address || {};
+
+    return {
+      lat: item.lat,
+      lon: item.lon,
+      country: address.country || null,
+      region: address.state || address.region || null,
+      continent: address.continent || null,
+      raw: item,
+    };
+  } catch (err) {
+    console.error("[Geocode] Error:", err.message);
+    return {};
   }
-  return null;
+}
+
+// --- Helper: Fetch JSON safely ---
+async function safeFetchJson(url, label) {
+  try {
+    console.log(`[Fetch] ${label}:`, url);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.error(`[Fetch] ${label} failed:`, err.message);
+    return { error: err.message };
+  }
 }
 
 export async function handler(event) {
   try {
-    const params = new URLSearchParams(event.queryStringParameters);
-    const city = params.get("city");
-    const mode = params.get("mode") || "modular";
-    const debug = params.get("debug") === "true";
+    const params = event.queryStringParameters || {};
+    const city = params.city;
+    const mode = params.mode || "modular";
+    const debug = params.debug === "true";
 
     if (!city) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing city param" }) };
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing ?city=" }),
+      };
     }
 
-    // --- Step 1: Check cache
-    const { data: cached, error: cacheError } = await supabase
+    // 1. Check cache first
+    console.log("[Cache] Checking for city:", city);
+    let { data: cached, error: cacheError } = await supabase
       .from("destination_cache")
       .select("*")
-      .eq("city", city)
+      .ilike("city", city)
       .maybeSingle();
 
-    if (cacheError) console.error("❌ Supabase cache error:", cacheError);
+    if (cacheError) {
+      console.error("[Cache] Select error:", cacheError.message);
+    }
 
     if (cached) {
-      const isStale =
-        Date.now() - new Date(cached.fetched_at).getTime() >
-        1000 * 60 * 60 * 24 * 7; // 7 days
-      if (!isStale) {
-        return {
-          statusCode: 200,
-          body: JSON.stringify({ ...cached.data, fromCache: true })
-        };
-      }
+      console.log("[Cache] HIT:", cached.city, cached.country);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          ...cached,
+          fromCache: true,
+        }),
+      };
     }
 
-    // --- Step 2: Resolve lat/lon via Nominatim
-    const nominatimUrl = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(
-      city
-    )}&format=json&limit=1&accept-language=en`;
-    const geo = await fetch(nominatimUrl, {
-      headers: { "User-Agent": "wandr-app" }
-    }).then((r) => r.json());
+    console.log("[Cache] MISS → Fetching live APIs");
 
-    if (!geo || geo.length === 0) {
-      return { statusCode: 404, body: JSON.stringify({ error: "City not found" }) };
-    }
+    // 2. Geocode city → ensure English country/region/continent
+    const geo = await geocodeCity(city);
+    const { lat, lon, country, region, continent } = geo;
 
-    const lat = geo[0].lat;
-    const lon = geo[0].lon;
-
-    // --- Step 3: Reverse geocode to get country/region (English)
-    let country = null;
-    let region = null;
-    try {
-      const reverseUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&accept-language=en`;
-      const rev = await fetch(reverseUrl, {
-        headers: { "User-Agent": "wandr-app" }
-      }).then((r) => r.json());
-
-      country = rev?.address?.country || null;
-      region =
-        rev?.address?.state ||
-        rev?.address?.region ||
-        rev?.address?.county ||
-        null;
-    } catch (err) {
-      console.error("❌ Failed to fetch country/region:", err.message);
-    }
-
-    const continent = country ? getContinent(country) : null;
-
-    // --- Step 4: Fetch live data
+    // 3. Build URLs for modular mode
     const baseUrl = process.env.BASE_URL || "https://wandr-scrape.netlify.app/.netlify/functions";
 
-    const endpoints = {
-      hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&lat=${lat}&lon=${lon}&limit=2`,
-      restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(city)}&lat=${lat}&lon=${lon}&limit=2`,
+    const urls = {
+      hotels: `${baseUrl}/getHotels?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=2`,
+      restaurants: `${baseUrl}/getRestaurants?city=${encodeURIComponent(city)}&lat=${lat || ""}&lon=${lon || ""}&limit=2`,
       attractions: `${baseUrl}/getCityAttractions?city=${encodeURIComponent(city)}&limit=2`,
       weather: `${baseUrl}/getWeather?city=${encodeURIComponent(city)}`,
-      forecast: `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`
+      forecast: `${baseUrl}/getForecast?city=${encodeURIComponent(city)}`,
     };
 
-    const [hotels, restaurants, attractions, weather, forecast] = await Promise.allSettled([
-      fetch(endpoints.hotels).then((r) => r.json()),
-      fetch(endpoints.restaurants).then((r) => r.json()),
-      fetch(endpoints.attractions).then((r) => r.json()),
-      fetch(endpoints.weather).then((r) => r.json()),
-      fetch(endpoints.forecast).then((r) => r.json())
+    // 4. Fetch in parallel
+    const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+      safeFetchJson(urls.hotels, "Hotels"),
+      safeFetchJson(urls.restaurants, "Restaurants"),
+      safeFetchJson(urls.attractions, "Attractions"),
+      safeFetchJson(urls.weather, "Weather"),
+      safeFetchJson(urls.forecast, "Forecast"),
     ]);
 
-    const result = {
+    // 5. Prepare cache row (English country enforced)
+    const cacheRow = {
       city,
-      lat,
-      lon,
-      country,
-      region,
-      continent,
-      hotels: hotels.value || [],
-      restaurants: restaurants.value || [],
-      attractions: attractions.value || [],
-      weather: weather.value || null,
-      forecast: forecast.value || null,
+      country: country || null,
+      region: region || null,
+      continent: continent || null,
+      lat: lat ? parseFloat(lat) : null,
+      lon: lon ? parseFloat(lon) : null,
       mode,
-      debug: debug ? { nominatim: geo, urls: endpoints } : undefined
+      hotels,
+      restaurants,
+      attractions,
+      weather,
+      forecast,
+      source: ["google", "openweathermap"],
+      fetched_at: new Date().toISOString(),
     };
 
-    // --- Step 5: Upsert into cache
-    await supabase.from("destination_cache").upsert({
-      city,
-      lat,
-      lon,
-      country,
-      region,
-      continent,
-      data: result,
-      fetched_at: new Date()
-    });
+    // 6. UPSERT to Supabase
+    console.log("[Cache] UPSERT row:", cacheRow);
 
-    return { statusCode: 200, body: JSON.stringify(result) };
+    const { data: upsertData, error: upsertError } = await supabase
+      .from("destination_cache")
+      .upsert(cacheRow, { onConflict: ["city", "country"] })
+      .select()
+      .single();
+
+    if (upsertError) {
+      console.error("[Cache] Upsert error:", upsertError.message);
+    } else {
+      console.log("[Cache] Upsert success:", upsertData.city, upsertData.country);
+    }
+
+    // 7. Return final response
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        ...cacheRow,
+        fromCache: false,
+        debug: debug ? { geo, urls } : undefined,
+      }),
+    };
   } catch (err) {
-    console.error("❌ getFullDestination error:", err);
-    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+    console.error("[Handler] Fatal error:", err.message);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Internal server error", details: err.message }),
+    };
   }
 }

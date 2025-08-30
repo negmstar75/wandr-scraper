@@ -142,49 +142,52 @@ export async function handler(event, context) {
       }
     };
 
-    // --------------------
-    // Parallel fetch
-    // --------------------
-    const [
-      hotels,
-      restaurants,
-      attractions,
-      weather,
-      forecast
-    ] = await Promise.all([
-      fetchJson(hotelsUrl, "hotels"),
-      fetchJson(restaurantsUrl, "restaurants"),
-      fetchJson(attractionsUrl, "attractions"),
-      fetchJson(weatherUrl, "weather"),
-      fetchJson(forecastUrl, "forecast"),
-    ]);
+// --------------------
+// Parallel fetch
+// --------------------
+const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+  fetchJson(hotelsUrl, "hotels"),
+  fetchJson(restaurantsUrl, "restaurants"),
+  fetchJson(attractionsUrl, "attractions"),
+  fetchJson(weatherUrl, "weather"),
+  fetchJson(forecastUrl, "forecast"),
+]);
 
-    // --------------------
-    // Insert into cache
-    // --------------------
-    const payload = {
-      city,
-      country: hotels?.country || null,
-      region: null,
-      continent: null,
-      lat: hotels?.lat || null,
-      lon: hotels?.lon || null,
-      mode,
-      hotels: Array.isArray(hotels) ? hotels : null,
-      restaurants: Array.isArray(restaurants) ? restaurants : null,
-      attractions: Array.isArray(attractions) ? attractions : null,
-      weather: weather && !weather.error ? weather : null,
-      forecast: forecast && !forecast.error ? forecast : null,
-      source: ["google", "openweathermap", "osm"],
-      fetched_at: new Date().toISOString(),
-    };
+// --------------------
+// Build metadata
+// --------------------
+const firstHotel = hotels?.hotels?.[0] || {};
+const firstAttraction = attractions?.attractions?.[0] || {};
+const firstRestaurant = restaurants?.restaurants?.[0] || {};
 
-    const { error: insertError } = await supabase.from("destination_cache").insert(payload);
-    if (insertError) {
-      console.error("[getFullDestination] Cache insert failed", insertError);
-    } else {
-      console.log("[getFullDestination] Cache insert success", { city });
-    }
+// --------------------
+// Insert into cache
+// --------------------
+const payload = {
+  city,
+  country: firstHotel.country || firstAttraction.country || firstRestaurant.country || null,
+  region: null,
+  continent: null,
+  lat: firstHotel.lat || firstAttraction.lat || firstRestaurant.lat || null,
+  lon: firstHotel.lon || firstAttraction.lon || firstRestaurant.lon || null,
+  mode,
+  hotels: Array.isArray(hotels?.hotels) ? hotels.hotels : null,
+  restaurants: Array.isArray(restaurants?.restaurants) ? restaurants.restaurants : null,
+  attractions: Array.isArray(attractions?.attractions) ? attractions.attractions : null,
+  weather: weather && !weather.error ? weather : null,
+  forecast: forecast && !forecast.error ? forecast : null,
+  source: ["google", "openweathermap", "osm"],
+  fetched_at: new Date().toISOString(),
+};
+
+console.log("[getFullDestination] Payload before insert", JSON.stringify(payload, null, 2));
+
+const { error: insertError } = await supabase.from("destination_cache").insert(payload);
+if (insertError) {
+  console.error("[getFullDestination] Cache insert failed", insertError);
+} else {
+  console.log("[getFullDestination] Cache insert success", { city });
+}
 
     // --------------------
     // Response

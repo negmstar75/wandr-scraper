@@ -1,153 +1,144 @@
-// netlify/functions/getFullDestination.js
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
-  auth: { persistSession: false },
-});
+// --------------------
+// Supabase client
+// --------------------
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// --- Helpers ---
-async function fetchJson(url, label) {
+// --------------------
+// Safe URL builder
+// --------------------
+function safeUrl(base, path) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${label} fetch failed (${res.status})`);
-    return await res.json();
+    if (!base || !path) {
+      console.error("[safeUrl] Missing base or path", { base, path });
+      return null;
+    }
+    return new URL(path, base).toString();
   } catch (err) {
-    console.error(`[getFullDestination] ${label} error:`, err.message);
+    console.error("[safeUrl] Invalid URL", { base, path, err });
     return null;
   }
 }
 
-async function resolveRegionAndContinent(city, country) {
-  let region = null;
-  let continent = null;
-
-  if (!country) return { region, continent };
-
-  // 1. Try city_region_map
+// --------------------
+// Handler
+// --------------------
+export async function handler(req, res) {
   try {
-    const { data: cityRegion, error: cityErr } = await supabase
-      .from("city_region_map")
-      .select("region")
-      .eq("city", city)
-      .eq("country", country)
-      .maybeSingle();
+    const { city, mode = "modular", limit = 5, debug = false } = req.query || {};
 
-    if (cityRegion && cityRegion.region) region = cityRegion.region;
-    if (cityErr) console.warn("city_region_map lookup error:", cityErr);
-  } catch (e) {
-    console.warn("city_region_map fetch failed:", e.message);
-  }
-
-  // 2. Try country_continent_map
-  try {
-    const { data: countryMap, error: countryErr } = await supabase
-      .from("country_continent_map")
-      .select("continent")
-      .eq("country_code", country)
-      .maybeSingle();
-
-    if (countryMap && countryMap.continent) continent = countryMap.continent;
-    if (countryErr) console.warn("country_continent_map lookup error:", countryErr);
-  } catch (e) {
-    console.warn("country_continent_map fetch failed:", e.message);
-  }
-
-  return { region, continent };
-}
-
-// --- Main handler ---
-export async function handler(req) {
-  try {
-    const url = new URL(req.url);
-    const city = url.searchParams.get("city");
-    const limit = url.searchParams.get("limit") || 5;
-    const mode = url.searchParams.get("mode") || "modular";
-    const debug = url.searchParams.get("debug") === "true";
-
+    // Defensive check
     if (!city) {
-      return new Response(
-        JSON.stringify({ error: "Missing required param: city" }),
-        { status: 400 }
-      );
+      console.error("[getFullDestination] Missing 'city' param", { query: req.query });
+      return res.status(400).json({ error: "Missing required 'city' query param" });
     }
 
-    // 1. Try cache first
-    let { data: cached, error: cacheErr } = await supabase
+    const baseUrl = process.env.BASE_URL;
+    if (!baseUrl) {
+      console.error("[getFullDestination] Missing BASE_URL env var");
+      return res.status(500).json({ error: "Server misconfiguration: BASE_URL not set" });
+    }
+
+    // Log inputs
+    console.log("[getFullDestination] Input params", { city, mode, limit, baseUrl });
+
+    // --------------------
+    // Cache check
+    // --------------------
+    let { data: cached } = await supabase
       .from("destination_cache")
       .select("*")
       .eq("city", city)
       .maybeSingle();
 
-    if (cached && !debug) {
-      return new Response(JSON.stringify({ fromCache: true, ...cached }), {
-        headers: { "Content-Type": "application/json" },
-      });
+    if (cached) {
+      console.log("[getFullDestination] Cache hit", { city });
+      return res.json({ fromCache: true, ...cached });
     }
 
-    // 2. Get geocode (Google / fallback OSM)
-    const geocodeUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
-      city
-    )}&format=json&limit=1`;
-    const geo = await fetchJson(geocodeUrl, "geocode");
+    console.log("[getFullDestination] Cache miss", { city });
 
-    const lat = geo?.[0]?.lat || null;
-    const lon = geo?.[0]?.lon || null;
-    const country =
-      geo?.[0]?.display_name?.split(",").pop()?.trim() || null;
+    // --------------------
+    // Build API URLs
+    // --------------------
+    const hotelsUrl = safeUrl(baseUrl, `/getHotels?city=${encodeURIComponent(city)}&limit=${limit}`);
+    const restaurantsUrl = safeUrl(baseUrl, `/getRestaurants?city=${encodeURIComponent(city)}&limit=${limit}`);
+    const attractionsUrl = safeUrl(baseUrl, `/getCityAttractions?city=${encodeURIComponent(city)}&limit=${limit}`);
+    const weatherUrl = safeUrl(baseUrl, `/getWeather?city=${encodeURIComponent(city)}`);
+    const forecastUrl = safeUrl(baseUrl, `/getForecast?city=${encodeURIComponent(city)}`);
 
-    // 3. Parallel fetch for hotels, restaurants, attractions, weather, forecast
-    const baseUrl = process.env.BASE_URL || "https://wandr-scrape.netlify.app/.netlify/functions";
+    const urls = { hotelsUrl, restaurantsUrl, attractionsUrl, weatherUrl, forecastUrl };
+    console.log("[getFullDestination] Built URLs", urls);
 
-    const [hotels, restaurants, attractions, weather, forecast] =
-      await Promise.all([
-        fetchJson(`${baseUrl}/getHotels?city=${city}&lat=${lat}&lon=${lon}&limit=${limit}`, "hotels"),
-        fetchJson(`${baseUrl}/getRestaurants?city=${city}&lat=${lat}&lon=${lon}&limit=${limit}`, "restaurants"),
-        fetchJson(`${baseUrl}/getCityAttractions?city=${city}&lat=${lat}&lon=${lon}&limit=${limit}`, "attractions"),
-        fetchJson(`${baseUrl}/getWeather?city=${city}&lat=${lat}&lon=${lon}`, "weather"),
-        fetchJson(`${baseUrl}/getForecast?city=${city}&lat=${lat}&lon=${lon}`, "forecast"),
-      ]);
+    // --------------------
+    // Fetch helpers
+    // --------------------
+    const fetchJson = async (url, label) => {
+      if (!url) return { error: "Invalid URL" };
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        return await resp.json();
+      } catch (err) {
+        console.error(`[getFullDestination] Fetch failed for ${label}`, { url, err });
+        return { error: err.message };
+      }
+    };
 
-    // 4. Region + Continent resolution
-    const { region, continent } = await resolveRegionAndContinent(city, country);
+    // --------------------
+    // Parallel fetch
+    // --------------------
+    const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+      fetchJson(hotelsUrl, "hotels"),
+      fetchJson(restaurantsUrl, "restaurants"),
+      fetchJson(attractionsUrl, "attractions"),
+      fetchJson(weatherUrl, "weather"),
+      fetchJson(forecastUrl, "forecast"),
+    ]);
 
+    // --------------------
+    // Insert into cache
+    // --------------------
     const payload = {
-      fromCache: false,
       city,
-      country,
-      region,
-      continent,
-      lat,
-      lon,
+      country: hotels?.country || null, // fallback from one of the responses
+      region: null,
+      continent: null,
+      lat: hotels?.lat || null,
+      lon: hotels?.lon || null,
       mode,
-      hotels,
-      restaurants,
-      attractions,
-      weather,
-      forecast,
+      hotels: Array.isArray(hotels) ? hotels : null,
+      restaurants: Array.isArray(restaurants) ? restaurants : null,
+      attractions: Array.isArray(attractions) ? attractions : null,
+      weather: weather && !weather.error ? weather : null,
+      forecast: forecast && !forecast.error ? forecast : null,
       source: ["google", "openweathermap", "osm"],
       fetched_at: new Date().toISOString(),
     };
 
-    // 5. Upsert into cache
-    const { error: upsertErr } = await supabase
-      .from("destination_cache")
-      .upsert(payload, { onConflict: "city,country" });
-
-    if (upsertErr) {
-      console.error("[getFullDestination] cache upsert error:", upsertErr);
+    const { error: insertError } = await supabase.from("destination_cache").insert(payload);
+    if (insertError) {
+      console.error("[getFullDestination] Cache insert failed", insertError);
+    } else {
+      console.log("[getFullDestination] Cache insert success", { city });
     }
 
-    return new Response(JSON.stringify(payload), {
-      headers: { "Content-Type": "application/json" },
-    });
+    // --------------------
+    // Response
+    // --------------------
+    const response = { fromCache: false, ...payload };
+    if (debug) response.debug = { urls, insertError };
+    return res.json(response);
+
   } catch (err) {
-    console.error("[getFullDestination] Fatal error:", err);
-    return new Response(JSON.stringify({ error: "Server error", details: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    console.error("[getFullDestination] Fatal error", err);
+    return res.status(500).json({ error: "Internal server error", details: err.message });
   }
 }

@@ -1,3 +1,4 @@
+// /netlify/functions/getFullDestination.js
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
@@ -26,12 +27,32 @@ function safeUrl(base, path) {
 }
 
 // --------------------
+// Build Netlify function URL helper
+// --------------------
+// Ensures we call the actual function path: / .netlify/functions/{name}
+// Accepts either a function name (getHotels) or a full path (/.netlify/functions/getHotels)
+function buildFunctionUrl(baseUrl, fnNameOrPath, query = "") {
+  // If caller passed a full path starting with /.netlify/functions, use it.
+  let path;
+  if (fnNameOrPath.startsWith("/.netlify/functions/")) {
+    path = `${fnNameOrPath}${query ? (fnNameOrPath.includes("?") ? `&${query}` : `?${query}`) : ""}`;
+  } else {
+    // fnNameOrPath is a short name like "getHotels"
+    path = `/.netlify/functions/${fnNameOrPath}${query ? `?${query}` : ""}`;
+  }
+  return safeUrl(baseUrl, path);
+}
+
+// --------------------
 // Netlify handler
 // --------------------
 export async function handler(event, context) {
   try {
     const params = event.queryStringParameters || {};
-    const { city, mode = "modular", limit = 5, debug = false } = params;
+    // note: query params are strings; keep your previous defaults
+    const { city, mode = "modular", limit = 5 } = params;
+    // debug param might be a string; treat existence as true
+    const debug = params.debug === "true" || params.debug === true || false;
 
     // Defensive check
     if (!city) {
@@ -74,13 +95,13 @@ export async function handler(event, context) {
     console.log("[getFullDestination] Cache miss", { city });
 
     // --------------------
-    // Build API URLs
+    // Build API URLs (correct Netlify functions path)
     // --------------------
-    const hotelsUrl = safeUrl(baseUrl, `/getHotels?city=${encodeURIComponent(city)}&limit=${limit}`);
-    const restaurantsUrl = safeUrl(baseUrl, `/getRestaurants?city=${encodeURIComponent(city)}&limit=${limit}`);
-    const attractionsUrl = safeUrl(baseUrl, `/getCityAttractions?city=${encodeURIComponent(city)}&limit=${limit}`);
-    const weatherUrl = safeUrl(baseUrl, `/getWeather?city=${encodeURIComponent(city)}`);
-    const forecastUrl = safeUrl(baseUrl, `/getForecast?city=${encodeURIComponent(city)}`);
+    const hotelsUrl = buildFunctionUrl(baseUrl, "getHotels", `city=${encodeURIComponent(city)}&limit=${limit}`);
+    const restaurantsUrl = buildFunctionUrl(baseUrl, "getRestaurants", `city=${encodeURIComponent(city)}&limit=${limit}`);
+    const attractionsUrl = buildFunctionUrl(baseUrl, "getCityAttractions", `city=${encodeURIComponent(city)}&limit=${limit}`);
+    const weatherUrl = buildFunctionUrl(baseUrl, "getWeather", `city=${encodeURIComponent(city)}`);
+    const forecastUrl = buildFunctionUrl(baseUrl, "getForecast", `city=${encodeURIComponent(city)}`);
 
     const urls = { hotelsUrl, restaurantsUrl, attractionsUrl, weatherUrl, forecastUrl };
     console.log("[getFullDestination] Built URLs", urls);
@@ -89,23 +110,48 @@ export async function handler(event, context) {
     // Fetch helpers
     // --------------------
     const fetchJson = async (url, label) => {
-      if (!url) return { error: "Invalid URL" };
+      if (!url) {
+        console.error(`[getFullDestination] Invalid URL for ${label}`, { url });
+        return { error: "Invalid URL" };
+      }
       try {
         const resp = await fetch(url);
         if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
+          // attempt to capture response body for debugging (text first, fallback to status)
+          let bodyText = null;
+          try {
+            bodyText = await resp.text();
+          } catch (e) {
+            bodyText = `<unreadable body: ${e.message}>`;
+          }
+          const errMsg = `HTTP ${resp.status} - ${bodyText}`;
+          console.error(`[getFullDestination] Fetch failed for ${label}`, { url, status: resp.status, body: bodyText });
+          return { error: errMsg, status: resp.status, body: bodyText };
         }
-        return await resp.json();
+        // parse JSON safely
+        try {
+          return await resp.json();
+        } catch (parseErr) {
+          const txt = await resp.text().catch(() => "<no body>");
+          console.error(`[getFullDestination] JSON parse error for ${label}`, { url, parseErr, bodyPreview: txt.slice(0, 1000) });
+          return { error: "Failed to parse JSON", body: txt };
+        }
       } catch (err) {
-        console.error(`[getFullDestination] Fetch failed for ${label}`, { url, err });
-        return { error: err.message };
+        console.error(`[getFullDestination] Fetch failed for ${label}`, { url, err: err.message || err });
+        return { error: err.message || String(err) };
       }
     };
 
     // --------------------
     // Parallel fetch
     // --------------------
-    const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+    const [
+      hotels,
+      restaurants,
+      attractions,
+      weather,
+      forecast
+    ] = await Promise.all([
       fetchJson(hotelsUrl, "hotels"),
       fetchJson(restaurantsUrl, "restaurants"),
       fetchJson(attractionsUrl, "attractions"),
@@ -144,7 +190,7 @@ export async function handler(event, context) {
     // Response
     // --------------------
     const response = { fromCache: false, ...payload };
-    if (debug) response.debug = { urls, insertError };
+    if (debug) response.debug = { urls, hotels, restaurants, attractions, weather, forecast, insertError };
 
     return {
       statusCode: 200,

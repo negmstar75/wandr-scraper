@@ -29,15 +29,11 @@ function safeUrl(base, path) {
 // --------------------
 // Build Netlify function URL helper
 // --------------------
-// Ensures we call the actual function path: / .netlify/functions/{name}
-// Accepts either a function name (getHotels) or a full path (/.netlify/functions/getHotels)
 function buildFunctionUrl(baseUrl, fnNameOrPath, query = "") {
-  // If caller passed a full path starting with /.netlify/functions, use it.
   let path;
   if (fnNameOrPath.startsWith("/.netlify/functions/")) {
     path = `${fnNameOrPath}${query ? (fnNameOrPath.includes("?") ? `&${query}` : `?${query}`) : ""}`;
   } else {
-    // fnNameOrPath is a short name like "getHotels"
     path = `/.netlify/functions/${fnNameOrPath}${query ? `?${query}` : ""}`;
   }
   return safeUrl(baseUrl, path);
@@ -49,13 +45,14 @@ function buildFunctionUrl(baseUrl, fnNameOrPath, query = "") {
 export async function handler(event, context) {
   try {
     const params = event.queryStringParameters || {};
-    // note: query params are strings; keep your previous defaults
-    const { city, mode = "modular", limit = 5 } = params;
-    // debug param might be a string; treat existence as true
+    const rawCity = params.city;
+    const normalizedCity = rawCity ? rawCity.trim().toLowerCase() : null;
+
+    const { mode = "modular", limit = 5 } = params;
     const debug = params.debug === "true" || params.debug === true || false;
 
     // Defensive check
-    if (!city) {
+    if (!normalizedCity) {
       console.error("[getFullDestination] Missing 'city' param", { params });
       return {
         statusCode: 400,
@@ -72,36 +69,35 @@ export async function handler(event, context) {
       };
     }
 
-    // Log inputs
-    console.log("[getFullDestination] Input params", { city, mode, limit, baseUrl });
+    console.log("[getFullDestination] Input params", { rawCity, normalizedCity, mode, limit, baseUrl });
 
     // --------------------
-    // Cache check
+    // Cache check (case-insensitive)
     // --------------------
     let { data: cached } = await supabase
       .from("destination_cache")
       .select("*")
-      .eq("city", city)
+      .ilike("city", normalizedCity) // case-insensitive match
       .maybeSingle();
 
     if (cached) {
-      console.log("[getFullDestination] Cache hit", { city });
+      console.log("[getFullDestination] Cache hit", { normalizedCity });
       return {
         statusCode: 200,
         body: JSON.stringify({ fromCache: true, ...cached }),
       };
     }
 
-    console.log("[getFullDestination] Cache miss", { city });
+    console.log("[getFullDestination] Cache miss", { normalizedCity });
 
     // --------------------
-    // Build API URLs (correct Netlify functions path)
+    // Build API URLs
     // --------------------
-    const hotelsUrl = buildFunctionUrl(baseUrl, "getHotels", `city=${encodeURIComponent(city)}&limit=${limit}`);
-    const restaurantsUrl = buildFunctionUrl(baseUrl, "getRestaurants", `city=${encodeURIComponent(city)}&limit=${limit}`);
-    const attractionsUrl = buildFunctionUrl(baseUrl, "getCityAttractions", `city=${encodeURIComponent(city)}&limit=${limit}`);
-    const weatherUrl = buildFunctionUrl(baseUrl, "getWeather", `city=${encodeURIComponent(city)}`);
-    const forecastUrl = buildFunctionUrl(baseUrl, "getForecast", `city=${encodeURIComponent(city)}`);
+    const hotelsUrl = buildFunctionUrl(baseUrl, "getHotels", `city=${encodeURIComponent(rawCity)}&limit=${limit}`);
+    const restaurantsUrl = buildFunctionUrl(baseUrl, "getRestaurants", `city=${encodeURIComponent(rawCity)}&limit=${limit}`);
+    const attractionsUrl = buildFunctionUrl(baseUrl, "getCityAttractions", `city=${encodeURIComponent(rawCity)}&limit=${limit}`);
+    const weatherUrl = buildFunctionUrl(baseUrl, "getWeather", `city=${encodeURIComponent(rawCity)}`);
+    const forecastUrl = buildFunctionUrl(baseUrl, "getForecast", `city=${encodeURIComponent(rawCity)}`);
 
     const urls = { hotelsUrl, restaurantsUrl, attractionsUrl, weatherUrl, forecastUrl };
     console.log("[getFullDestination] Built URLs", urls);
@@ -117,7 +113,6 @@ export async function handler(event, context) {
       try {
         const resp = await fetch(url);
         if (!resp.ok) {
-          // attempt to capture response body for debugging (text first, fallback to status)
           let bodyText = null;
           try {
             bodyText = await resp.text();
@@ -128,7 +123,6 @@ export async function handler(event, context) {
           console.error(`[getFullDestination] Fetch failed for ${label}`, { url, status: resp.status, body: bodyText });
           return { error: errMsg, status: resp.status, body: bodyText };
         }
-        // parse JSON safely
         try {
           return await resp.json();
         } catch (parseErr) {
@@ -142,52 +136,53 @@ export async function handler(event, context) {
       }
     };
 
-// --------------------
-// Parallel fetch
-// --------------------
-const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
-  fetchJson(hotelsUrl, "hotels"),
-  fetchJson(restaurantsUrl, "restaurants"),
-  fetchJson(attractionsUrl, "attractions"),
-  fetchJson(weatherUrl, "weather"),
-  fetchJson(forecastUrl, "forecast"),
-]);
+    // --------------------
+    // Parallel fetch
+    // --------------------
+    const [hotels, restaurants, attractions, weather, forecast] = await Promise.all([
+      fetchJson(hotelsUrl, "hotels"),
+      fetchJson(restaurantsUrl, "restaurants"),
+      fetchJson(attractionsUrl, "attractions"),
+      fetchJson(weatherUrl, "weather"),
+      fetchJson(forecastUrl, "forecast"),
+    ]);
 
-// --------------------
-// Build metadata
-// --------------------
-const firstHotel = hotels?.hotels?.[0] || {};
-const firstAttraction = attractions?.attractions?.[0] || {};
-const firstRestaurant = restaurants?.restaurants?.[0] || {};
+    // --------------------
+    // Build metadata
+    // --------------------
+    const firstHotel = hotels?.hotels?.[0] || {};
+    const firstAttraction = attractions?.attractions?.[0] || {};
+    const firstRestaurant = restaurants?.restaurants?.[0] || {};
 
-// --------------------
-// Insert into cache
-// --------------------
-const payload = {
-  city,
-  country: firstHotel.country || firstAttraction.country || firstRestaurant.country || null,
-  region: null,
-  continent: null,
-  lat: firstHotel.lat || firstAttraction.lat || firstRestaurant.lat || null,
-  lon: firstHotel.lon || firstAttraction.lon || firstRestaurant.lon || null,
-  mode,
-  hotels: Array.isArray(hotels?.hotels) ? hotels.hotels : null,
-  restaurants: Array.isArray(restaurants?.restaurants) ? restaurants.restaurants : null,
-  attractions: Array.isArray(attractions?.attractions) ? attractions.attractions : null,
-  weather: weather && !weather.error ? weather : null,
-  forecast: forecast && !forecast.error ? forecast : null,
-  source: ["google", "openweathermap", "osm"],
-  fetched_at: new Date().toISOString(),
-};
+    // --------------------
+    // Insert into cache
+    // --------------------
+    const payload = {
+      city: normalizedCity,       // always lowercase for consistency
+      display_city: rawCity,      // preserve original input casing
+      country: firstHotel.country || firstAttraction.country || firstRestaurant.country || null,
+      region: null,
+      continent: null,
+      lat: firstHotel.lat || firstAttraction.lat || firstRestaurant.lat || null,
+      lon: firstHotel.lon || firstAttraction.lon || firstRestaurant.lon || null,
+      mode,
+      hotels: Array.isArray(hotels?.hotels) ? hotels.hotels : null,
+      restaurants: Array.isArray(restaurants?.restaurants) ? restaurants.restaurants : null,
+      attractions: Array.isArray(attractions?.attractions) ? attractions.attractions : null,
+      weather: weather && !weather.error ? weather : null,
+      forecast: forecast && !forecast.error ? forecast : null,
+      source: ["google", "openweathermap", "osm"],
+      fetched_at: new Date().toISOString(),
+    };
 
-console.log("[getFullDestination] Payload before insert", JSON.stringify(payload, null, 2));
+    console.log("[getFullDestination] Payload before insert", JSON.stringify(payload, null, 2));
 
-const { error: insertError } = await supabase.from("destination_cache").insert(payload);
-if (insertError) {
-  console.error("[getFullDestination] Cache insert failed", insertError);
-} else {
-  console.log("[getFullDestination] Cache insert success", { city });
-}
+    const { error: insertError } = await supabase.from("destination_cache").insert(payload);
+    if (insertError) {
+      console.error("[getFullDestination] Cache insert failed", insertError);
+    } else {
+      console.log("[getFullDestination] Cache insert success", { normalizedCity });
+    }
 
     // --------------------
     // Response

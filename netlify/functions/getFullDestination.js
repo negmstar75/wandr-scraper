@@ -26,22 +26,29 @@ function safeUrl(base, path) {
 }
 
 // --------------------
-// Handler
+// Netlify handler
 // --------------------
-export async function handler(req, res) {
+export async function handler(event, context) {
   try {
-    const { city, mode = "modular", limit = 5, debug = false } = req.query || {};
+    const params = event.queryStringParameters || {};
+    const { city, mode = "modular", limit = 5, debug = false } = params;
 
     // Defensive check
     if (!city) {
-      console.error("[getFullDestination] Missing 'city' param", { query: req.query });
-      return res.status(400).json({ error: "Missing required 'city' query param" });
+      console.error("[getFullDestination] Missing 'city' param", { params });
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: "Missing required 'city' query param" }),
+      };
     }
 
     const baseUrl = process.env.BASE_URL;
     if (!baseUrl) {
       console.error("[getFullDestination] Missing BASE_URL env var");
-      return res.status(500).json({ error: "Server misconfiguration: BASE_URL not set" });
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: "Server misconfiguration: BASE_URL not set" }),
+      };
     }
 
     // Log inputs
@@ -58,7 +65,10 @@ export async function handler(req, res) {
 
     if (cached) {
       console.log("[getFullDestination] Cache hit", { city });
-      return res.json({ fromCache: true, ...cached });
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ fromCache: true, ...cached }),
+      };
     }
 
     console.log("[getFullDestination] Cache miss", { city });
@@ -108,7 +118,7 @@ export async function handler(req, res) {
     // --------------------
     const payload = {
       city,
-      country: hotels?.country || null, // fallback from one of the responses
+      country: hotels?.country || null,
       region: null,
       continent: null,
       lat: hotels?.lat || null,
@@ -135,10 +145,18 @@ export async function handler(req, res) {
     // --------------------
     const response = { fromCache: false, ...payload };
     if (debug) response.debug = { urls, insertError };
-    return res.json(response);
+
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(response),
+    };
 
   } catch (err) {
     console.error("[getFullDestination] Fatal error", err);
-    return res.status(500).json({ error: "Internal server error", details: err.message });
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Internal server error", details: err.message }),
+    };
   }
 }

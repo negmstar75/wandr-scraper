@@ -143,6 +143,9 @@ export async function handler(event) {
         metadata: { city, country },
       });
     }
+console.log("Attempting to insert affiliate links:", linksToInsert);
+const { error } = await supabase.from("partner_affiliate_links").upsert(linksToInsert);
+if (error) console.error("Supabase insert error:", error);
 
     return {
       statusCode: 200,

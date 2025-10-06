@@ -167,13 +167,14 @@ exports.handler = async function (event) {
         affiliate_id = aff.id;
       }
 
-      linksToInsert.push({
+linksToInsert.push({
   destination_slug: slug,
   affiliate_id,
-  partner_code: partner.partner_code,
+  partner_code: partner.partner_code, // ✅ add this line
   deep_link: partner.deep_link,
   metadata: { city, country },
 });
+
 
 
     console.log("🧩 Attempting to insert affiliate links:", linksToInsert);

@@ -68,7 +68,7 @@ function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl 
 // --------------------------------------------
 // Handler: Create affiliate links for a destination
 // --------------------------------------------
-export async function handler(event) {
+exports.handler = async function (event) {
   try {
     const { slug, name, country, city } = event.queryStringParameters || {};
 
@@ -84,7 +84,6 @@ export async function handler(event) {
     const travelBase = AFFILIATE_CONFIG;
     const { marker, trs } = travelBase;
 
-    // --- Build partner link data
     const partners = Object.values(travelBase.partners).map((p) => {
       let targetUrl;
 
@@ -116,7 +115,6 @@ export async function handler(event) {
       };
     });
 
-    // --- Prepare link insert array
     const linksToInsert = [];
 
     for (const partner of partners) {
@@ -183,4 +181,4 @@ export async function handler(event) {
       body: JSON.stringify({ error: err.message }),
     };
   }
-}
+};

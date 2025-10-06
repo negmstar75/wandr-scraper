@@ -1,8 +1,3 @@
-// ==========================================================
-// generateAffiliateLinks.cjs
-// Full CommonJS version with detailed logs and all original logic
-// ==========================================================
-
 const { createClient } = require("@supabase/supabase-js");
 
 const supabase = createClient(
@@ -24,38 +19,33 @@ const AFFILIATE_CONFIG = {
       baseUrl: "https://tp.media/r",
       campaign_id: "84",
       partner_id: "2076",
-      logo_url:
-        "https://content.skyscnr.com/m/78f2269827c54383/original/bookingcom-logo.png",
+      logo_url: "https://content.skyscnr.com/m/78f2269827c54383/original/bookingcom-logo.png",
     },
     expedia: {
       name: "Expedia",
       baseUrl: "https://tp.media/r",
       campaign_id: "594",
       partner_id: "8645",
-      logo_url:
-        "https://upload.wikimedia.org/wikipedia/commons/8/89/Expedia_Logo.svg",
+      logo_url: "https://upload.wikimedia.org/wikipedia/commons/8/89/Expedia_Logo.svg",
     },
     getyourguide: {
       name: "GetYourGuide",
       baseUrl: "https://tp.media/r",
       campaign_id: "137",
       partner_id: "6789",
-      logo_url:
-        "https://upload.wikimedia.org/wikipedia/commons/f/f2/GetYourGuide_logo.svg",
+      logo_url: "https://upload.wikimedia.org/wikipedia/commons/f/f2/GetYourGuide_logo.svg",
     },
     tripadvisor: {
       name: "Tripadvisor",
       baseUrl: "https://tp.media/r",
       campaign_id: "138",
       partner_id: "6781",
-      logo_url:
-        "https://upload.wikimedia.org/wikipedia/commons/6/6f/Tripadvisor_Logo.svg",
+      logo_url: "https://upload.wikimedia.org/wikipedia/commons/6/6f/Tripadvisor_Logo.svg",
     },
     lonelyplanet: {
       name: "Lonely Planet",
       baseUrl: "https://www.lonelyplanet.com/articles",
-      logo_url:
-        "https://upload.wikimedia.org/wikipedia/commons/4/4b/Lonely_Planet_Logo.svg",
+      logo_url: "https://upload.wikimedia.org/wikipedia/commons/4/4b/Lonely_Planet_Logo.svg",
       deep_link_template:
         "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program",
     },
@@ -71,24 +61,20 @@ function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl 
 }
 
 // --------------------------------------------
-// Main Handler
+// Handler: Create affiliate links for a destination
 // --------------------------------------------
-exports.handler = async function (event) {
-  console.log("===== generateAffiliateLinks START =====");
-  console.log("Incoming query params:", event.queryStringParameters);
-
+exports.handler = async (event) => {
   try {
-    const { slug, name, country, city, debug } = event.queryStringParameters || {};
+    const { slug, name, country, city } = event.queryStringParameters || {};
 
     if (!slug || !name) {
-      console.warn("❌ Missing required parameters:", { slug, name });
       return {
         statusCode: 400,
         body: JSON.stringify({ error: "Missing required parameters: slug, name" }),
       };
     }
 
-    console.log("🔹 Building affiliate links for:", { slug, name, country, city });
+    console.log("[generateAffiliateLinks] 🚀 Start:", { slug, name, country, city });
 
     const travelBase = AFFILIATE_CONFIG;
     const { marker, trs } = travelBase;
@@ -125,30 +111,22 @@ exports.handler = async function (event) {
       };
     });
 
-    console.log("✅ Built partner data:", partners.map((p) => p.partner_name));
+    console.log("[generateAffiliateLinks] Built partner link array:", partners);
 
     // --- Prepare link insert array
     const linksToInsert = [];
 
     for (const partner of partners) {
-      console.log(`🔍 Checking affiliate: ${partner.partner_name}`);
-
-      const { data: existing, error: selErr } = await supabase
+      const { data: existing } = await supabase
         .from("affiliates")
         .select("id")
         .eq("partner_code", partner.partner_code)
         .maybeSingle();
 
-      if (selErr) {
-        console.error("Supabase select error:", selErr);
-        throw selErr;
-      }
-
       let affiliate_id = existing?.id;
 
       if (!affiliate_id) {
-        console.log(`🆕 Inserting new affiliate: ${partner.partner_name}`);
-
+        console.log(`[generateAffiliateLinks] ➕ Creating new affiliate entry for ${partner.partner_name}`);
         const { data: aff, error: insertErr } = await supabase
           .from("affiliates")
           .insert([
@@ -167,29 +145,27 @@ exports.handler = async function (event) {
         affiliate_id = aff.id;
       }
 
-linksToInsert.push({
-  destination_slug: slug,
-  affiliate_id,
-  partner_code: partner.partner_code, // ✅ add this line
-  deep_link: partner.deep_link,
-  metadata: { city, country },
-});
+      linksToInsert.push({
+        destination_slug: slug,
+        affiliate_id,
+        partner_code: partner.partner_code, // ✅ added this
+        deep_link: partner.deep_link,
+        metadata: { city, country },
+      });
+    }
 
-
-
-    console.log("🧩 Attempting to insert affiliate links:", linksToInsert);
+    console.log("[generateAffiliateLinks] Attempting Supabase upsert:", linksToInsert);
 
     const { error: upsertErr } = await supabase
       .from("partner_affiliate_links")
       .upsert(linksToInsert, { onConflict: "destination_slug,affiliate_id" });
 
     if (upsertErr) {
-      console.error("❌ Supabase upsert error:", upsertErr);
+      console.error("[generateAffiliateLinks] ❌ Supabase upsert error:", upsertErr);
       throw upsertErr;
     }
 
-    console.log(`✅ Successfully inserted ${linksToInsert.length} links`);
-    console.log("===== generateAffiliateLinks END =====");
+    console.log(`[generateAffiliateLinks] ✅ Successfully inserted ${linksToInsert.length} links`);
 
     return {
       statusCode: 200,
@@ -197,11 +173,10 @@ linksToInsert.push({
         status: "ok",
         message: `Affiliate links generated for ${name}`,
         partners: linksToInsert.length,
-        debug: debug ? linksToInsert : undefined,
       }),
     };
   } catch (err) {
-    console.error("[generateAffiliateLinks] ❌ Fatal error", err);
+    console.error("[generateAffiliateLinks] 💥 Fatal error", err);
     return {
       statusCode: 500,
       body: JSON.stringify({ error: err.message }),

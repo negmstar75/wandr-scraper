@@ -1,74 +1,187 @@
+// netlify/functions/generateAffiliateLinks.cjs
+
 const { createClient } = require("@supabase/supabase-js");
-const { affiliateTemplates } = require("../../affiliateTemplates.js");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --------------------------------------------
-// Helper: Build a Travelpayouts link
-// --------------------------------------------
+// ------------------------------------------------------
+// 🌍 Deep-link templates (previously affiliateTemplates.js)
+// ------------------------------------------------------
+const affiliateTemplates = {
+  booking: {
+    name: "Booking.com",
+    category: "hotel",
+    template:
+      "https://www.booking.com/searchresults.html?checkin={checkin}&checkout={checkout}&ss={destination}&group_adults={adults}&group_children={children}",
+    params: ["destination", "checkin", "checkout", "adults", "children"],
+  },
+  expedia: {
+    name: "Expedia",
+    category: "hotel",
+    template:
+      "https://www.expedia.com/Hotel-Search?destination={destination}&d1={checkin}&d2={checkout}&adults={adults}&rooms=1",
+    params: ["destination", "checkin", "checkout", "adults"],
+  },
+  expedia_activities: {
+    name: "Expedia - Things to Do",
+    category: "activities",
+    template:
+      "https://www.expedia.com/things-to-do/search?location={destination}&startDate={checkin}&endDate={checkout}&sort=RECOMMENDED",
+    params: ["destination", "checkin", "checkout"],
+  },
+  getyourguide: {
+    name: "GetYourGuide",
+    category: "activities",
+    template: "https://www.getyourguide.com/{slug}-l16/",
+    params: ["slug"],
+  },
+  tripadvisor: {
+    name: "Tripadvisor",
+    category: "activities",
+    template:
+      "https://www.tripadvisor.com/Tourism-g187147-{slug}-Vacations.html",
+    params: ["slug"],
+  },
+  tiqets: {
+    name: "Tiqets",
+    category: "activities",
+    template: "https://www.tiqets.com/en/things-to-do-in-{slug}-c66746/",
+    params: ["slug"],
+  },
+  klook: {
+    name: "Klook",
+    category: "activities",
+    template:
+      "https://www.klook.com/search/result/?query={destination}&sort=most_relevant",
+    params: ["destination"],
+  },
+  rentalcars: {
+    name: "Rentalcars",
+    category: "car_rental",
+    template:
+      "https://www.rentalcars.com/search-results?locationName={destination}&driversAge={age}&puDay={pickup_day}&puMonth={pickup_month}&puYear={pickup_year}&doDay={drop_day}&doMonth={drop_month}&doYear={drop_year}",
+    params: [
+      "destination",
+      "age",
+      "pickup_day",
+      "pickup_month",
+      "pickup_year",
+      "drop_day",
+      "drop_month",
+      "drop_year",
+    ],
+  },
+  cheapoair: {
+    name: "CheapOair",
+    category: "flights",
+    template:
+      "https://www.cheapoair.com/air/listing?d1={origin}&d2={destination}&dt1={depart}&dt2={return}&tripType={tripType}",
+    params: ["origin", "destination", "depart", "return", "tripType"],
+  },
+  hostelworld: {
+    name: "Hostelworld",
+    category: "hotel",
+    template:
+      "https://www.hostelworld.com/pwa/s?city={destination}&from={checkin}&to={checkout}&guests={adults}",
+    params: ["destination", "checkin", "checkout", "adults"],
+  },
+  wegotrip: {
+    name: "WeGoTrip",
+    category: "activities",
+    template: "https://wegotrip.com/{slug}-d3/",
+    params: ["slug"],
+  },
+  gocity: {
+    name: "GoCity",
+    category: "activities",
+    template: "https://gocity.com/en/{slug}/passes",
+    params: ["slug"],
+  },
+  airalo: {
+    name: "Airalo",
+    category: "tools",
+    template: "https://www.airalo.com/{slug}-esim",
+    params: ["slug"],
+  },
+  lonelyplanet: {
+    name: "Lonely Planet",
+    category: "guides",
+    template:
+      "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program",
+    params: ["slug"],
+  },
+};
+
+// ------------------------------------------------------
+// 🔗 Affiliate base configuration (Travelpayouts network)
+// ------------------------------------------------------
+const AFFILIATE_CONFIG = {
+  marker: "466615",
+  trs: "252990",
+  lp_ref: "5103006.jxkDNNdC6D",
+  partners: {
+    booking: { name: "Booking.com", baseUrl: "https://tp.media/r", campaign_id: "84", partner_id: "2076" },
+    expedia: { name: "Expedia", baseUrl: "https://tp.media/r", campaign_id: "594", partner_id: "8645" },
+    getyourguide: { name: "GetYourGuide", baseUrl: "https://tp.media/r", campaign_id: "108", partner_id: "3965" },
+    tripadvisor: { name: "Tripadvisor", baseUrl: "https://tp.media/r", campaign_id: "149", partner_id: "4456" },
+    klook: { name: "Klook", baseUrl: "https://tp.media/r", campaign_id: "137", partner_id: "4110" },
+    tiqets: { name: "Tiqets", baseUrl: "https://tp.media/r", campaign_id: "89", partner_id: "2074" },
+    rentalcars: { name: "Rentalcars", baseUrl: "https://tp.media/r", campaign_id: "130", partner_id: "3814" },
+    cheapoair: { name: "CheapOair", baseUrl: "https://tp.media/r", campaign_id: "146", partner_id: "4426" },
+    hostelworld: { name: "Hostelworld", baseUrl: "https://tp.media/r", campaign_id: "93", partner_id: "3518" },
+    wegotrip: { name: "WeGoTrip", baseUrl: "https://tp.media/r", campaign_id: "150", partner_id: "4487" },
+    gocity: { name: "GoCity", baseUrl: "https://tp.media/r", campaign_id: "62", partner_id: "1942" },
+    airalo: { name: "Airalo", baseUrl: "https://tp.media/r", campaign_id: "541", partner_id: "8310" },
+    lonelyplanet: { name: "Lonely Planet", baseUrl: "", campaign_id: null, partner_id: null },
+  },
+};
+
+// ------------------------------------------------------
+// 🧩 Helper functions
+// ------------------------------------------------------
 function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl }) {
   const encoded = encodeURIComponent(targetUrl);
   return `${baseUrl}?marker=${marker}&trs=${trs}&p=${partner_id}&u=${encoded}&campaign_id=${campaign_id}`;
 }
 
-// --------------------------------------------
-// Helper: Replace placeholders in template
-// --------------------------------------------
-function applyTemplate(template, params = {}) {
-  let result = template;
-  for (const [key, value] of Object.entries(params)) {
-    result = result.replace(new RegExp(`{${key}}`, "g"), encodeURIComponent(value || ""));
-  }
-  return result;
+function fillTemplate(template, data) {
+  return template.replace(/\{(.*?)\}/g, (_, key) => encodeURIComponent(data[key] || ""));
 }
 
-// --------------------------------------------
-// Main handler
-// --------------------------------------------
+// ------------------------------------------------------
+// 🏗️ Main handler
+// ------------------------------------------------------
 exports.handler = async (event) => {
-  console.log("🚀 [generateAffiliateLinks] Function started");
-
   try {
     const { slug, name, country, city } = event.queryStringParameters || {};
-    if (!slug || !name) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing required parameters: slug, name" }),
-      };
-    }
+    if (!slug || !name)
+      return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
 
-    console.log("🌍 Params received:", { slug, name, country, city });
+    console.log("[generateAffiliateLinks] 🚀 Start:", { slug, name, country, city });
 
-    const { marker, trs } = affiliateTemplates.config;
-    const partners = affiliateTemplates.partners;
+    const { marker, trs } = AFFILIATE_CONFIG;
+    const partners = Object.values(AFFILIATE_CONFIG.partners);
 
-    console.log(`📦 Loaded ${Object.keys(partners).length} partners`);
+    const partnersData = [];
 
-    const linksToInsert = [];
+    for (const p of partners) {
+      const template = affiliateTemplates[p.name.toLowerCase().replace(/\s+/g, "")];
+      let targetUrl;
 
-    for (const key of Object.keys(partners)) {
-      const p = partners[key];
-      console.log(`🧩 Processing partner: ${p.name}`);
-
-      // Generate target URL
-      let targetUrl = "";
-
-      if (p.template) {
-        targetUrl = applyTemplate(p.template, {
-          slug: slug.split("/").pop(),
-          destination: name,
-          city,
-          country,
-          checkin: "2025-10-10",
+      if (template) {
+        targetUrl = fillTemplate(template.template, {
+          slug,
+          destination: name || city || country,
+          checkin: "2025-10-06",
           checkout: "2025-10-12",
-          adults: "2",
-          children: "0",
+          adults: 2,
+          children: 0,
           origin: "CAI",
-          depart: "2025-10-10",
-          return: "2025-10-20",
+          depart: "2025-10-06",
+          return: "2025-10-12",
           tripType: "ROUNDTRIP",
         });
       } else {
@@ -77,51 +190,45 @@ exports.handler = async (event) => {
         )}`;
       }
 
-      let deep_link = targetUrl;
+      const deep_link =
+        p.name === "Lonely Planet"
+          ? targetUrl
+          : buildTpLink({ baseUrl: p.baseUrl, marker, trs, partner_id: p.partner_id, campaign_id: p.campaign_id, targetUrl });
 
-      // Wrap with TP link if Travelpayouts partner
-      if (p.base_url && p.partner_id && p.campaign_id) {
-        deep_link = buildTpLink({
-          baseUrl: p.base_url,
-          marker,
-          trs,
-          partner_id: p.partner_id,
-          campaign_id: p.campaign_id,
-          targetUrl,
-        });
-      }
+      partnersData.push({
+        partner_name: p.name,
+        partner_code: p.name.toLowerCase().replace(/\s+/g, "_"),
+        deep_link,
+        logo_url: template?.logo_url || "",
+      });
+    }
 
-      console.log(`🌐 Deep link generated for ${p.name}:`, deep_link);
+    console.log("[generateAffiliateLinks] Built partner link array:", partnersData);
 
-      // Ensure affiliate record exists
-      const partner_code = p.name.toLowerCase().replace(/\s+/g, "_");
-
-      const { data: existing, error: selectErr } = await supabase
+    const linksToInsert = [];
+    for (const partner of partnersData) {
+      const { data: existing } = await supabase
         .from("affiliates")
         .select("id")
-        .eq("partner_code", partner_code)
+        .eq("partner_code", partner.partner_code)
         .maybeSingle();
 
-      if (selectErr) console.error("⚠️ Error checking affiliate:", selectErr);
-
       let affiliate_id = existing?.id;
-
       if (!affiliate_id) {
-        console.log(`➕ Creating affiliate for ${p.name}`);
+        console.log(`[generateAffiliateLinks] ➕ Creating new affiliate entry for ${partner.partner_name}`);
         const { data: aff, error: insertErr } = await supabase
           .from("affiliates")
           .insert([
             {
-              partner_name: p.name,
-              partner_code,
-              logo_url: p.logo_url,
-              base_url: p.base_url || null,
+              partner_name: partner.partner_name,
+              partner_code: partner.partner_code,
+              logo_url: partner.logo_url,
+              base_url: partner.deep_link,
               active: true,
             },
           ])
           .select()
           .single();
-
         if (insertErr) throw insertErr;
         affiliate_id = aff.id;
       }
@@ -129,37 +236,23 @@ exports.handler = async (event) => {
       linksToInsert.push({
         destination_slug: slug,
         affiliate_id,
-        partner_code,
-        deep_link,
+        partner_code: partner.partner_code,
+        deep_link: partner.deep_link,
         metadata: { city, country },
       });
     }
 
-    console.log(`📝 Prepared ${linksToInsert.length} links to insert`);
-
+    console.log("[generateAffiliateLinks] Attempting Supabase upsert:", linksToInsert.length);
     const { error: upsertErr } = await supabase
       .from("partner_affiliate_links")
       .upsert(linksToInsert, { onConflict: "destination_slug,affiliate_id" });
 
-    if (upsertErr) {
-      console.error("❌ Supabase upsert error:", upsertErr);
-      throw upsertErr;
-    }
+    if (upsertErr) throw upsertErr;
 
-    console.log(`✅ Successfully generated ${linksToInsert.length} links`);
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        status: "ok",
-        message: `Affiliate links generated for ${name}`,
-        partners: linksToInsert.length,
-      }),
-    };
+    console.log(`[generateAffiliateLinks] ✅ Successfully inserted ${linksToInsert.length} links`);
+    return { statusCode: 200, body: JSON.stringify({ status: "ok", message: `Affiliate links generated for ${name}`, partners: linksToInsert.length }) };
   } catch (err) {
-    console.error("💥 [generateAffiliateLinks] Fatal error:", err);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message }),
-    };
+    console.error("[generateAffiliateLinks] 💥 Fatal error", err);
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };

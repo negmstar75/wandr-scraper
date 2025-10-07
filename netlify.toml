@@ -4,4 +4,9 @@
 
 [dev]
   functionsPort = 8888
+ 
+  [[scheduled]]
+function = "cleanupAffiliateLogs"
+cron = "0 3 * * *" # every day at 03:00 UTC
+
 

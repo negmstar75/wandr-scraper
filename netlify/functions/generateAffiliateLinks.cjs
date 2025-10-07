@@ -206,13 +206,13 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Built partner link array", { count: partnersData.length });
 
-    const linksToInsert = [];
-    for (const partner of partnersData) {
-      const { data: existing } = await supabase
-        .from("affiliates")
-        .select("id")
-        .eq("partner_code", partner.partner_code)
-        .maybeSingle();
+    const { error: upsertErr } = await supabase
+  .from("partner_affiliate_links")
+  .upsert(linksToInsert, {
+    onConflict: ["destination_slug", "affiliate_id"],
+    ignoreDuplicates: false,
+  });
+
 
       let affiliate_id = existing?.id;
       if (!affiliate_id) {

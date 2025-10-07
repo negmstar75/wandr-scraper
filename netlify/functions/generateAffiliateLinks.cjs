@@ -220,7 +220,7 @@ exports.handler = async (event) => {
       let affiliate_id = existing?.id;
 
       if (!affiliate_id) {
-        const { data: aff, error: insertErr } = await supabase
+        let { data: aff, error: insertErr } = await supabase
   .from("affiliates")
   .upsert(
     [
@@ -237,9 +237,21 @@ exports.handler = async (event) => {
   .select()
   .single();
 
-        if (insertErr) throw insertErr;
-        affiliate_id = aff.id;
-      }
+if (insertErr) throw insertErr;
+
+let affiliate_id = aff?.id;
+
+if (!affiliate_id) {
+  // The upsert found an existing partner and didn’t return data — fetch it
+  const { data: existingAff, error: fetchErr } = await supabase
+    .from("affiliates")
+    .select("id")
+    .eq("partner_code", partner.partner_code)
+    .maybeSingle();
+
+  if (fetchErr) throw fetchErr;
+  affiliate_id = existingAff?.id;
+}
 
       linksToInsert.push({
         destination_slug: slug,

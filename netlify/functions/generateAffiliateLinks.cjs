@@ -9,6 +9,7 @@ const supabase = createClient(
 
 // ------------------------------------------------------
 // 🌍 Deep-link templates
+// (unchanged keys — ensure keys match AFFILIATE_CONFIG partner keys)
 // ------------------------------------------------------
 const affiliateTemplates = {
   booking: {
@@ -142,39 +143,68 @@ const AFFILIATE_CONFIG = {
 // ------------------------------------------------------
 // 🧩 Helpers
 // ------------------------------------------------------
+function normalizeKey(key) {
+  // produce consistent keys for lookup and partner_code
+  return String(key || "")
+    .toLowerCase()
+    .replace(/[\s\.\-]+/g, "")
+    .replace(/_+/g, "_");
+}
+
 function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl }) {
-  const encoded = encodeURIComponent(targetUrl);
+  if (!baseUrl) return targetUrl || "";
+  const encoded = encodeURIComponent(targetUrl || "");
   return `${baseUrl}?marker=${marker}&trs=${trs}&p=${partner_id}&u=${encoded}&campaign_id=${campaign_id}`;
 }
 
 function fillTemplate(template, data) {
-  return template.replace(/\{(.*?)\}/g, (_, key) => encodeURIComponent(data[key] || ""));
+  if (!template) return "";
+  return template.replace(/\{(.*?)\}/g, (_, key) => encodeURIComponent(data[key] ?? ""));
+}
+
+// Safely extract query param
+function getQueryParam(event, name, fallback = undefined) {
+  try {
+    return (event.queryStringParameters && event.queryStringParameters[name]) || fallback;
+  } catch (e) {
+    return fallback;
+  }
 }
 
 // ------------------------------------------------------
 // 🏗️ Handler
 // ------------------------------------------------------
 exports.handler = async (event) => {
+  let debug = false;
   try {
-    const { slug, name, country, city } = event.queryStringParameters || {};
-    if (!slug || !name)
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
+    const slug = getQueryParam(event, "slug");
+    const name = getQueryParam(event, "name");
+    const country = getQueryParam(event, "country");
+    const city = getQueryParam(event, "city");
+    debug = getQueryParam(event, "debug", "false") === "true";
 
-    await logToSupabase("info", "Start affiliate link generation", { slug, name, country, city });
+    if (!slug || !name) {
+      await logToSupabase("warn", "Missing required parameters", { slug, name, country, city });
+      return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
+    }
+
+    await logToSupabase("info", "Start affiliate link generation", { slug, name, country, city, debug });
 
     const { marker, trs } = AFFILIATE_CONFIG;
-    const partners = Object.values(AFFILIATE_CONFIG.partners);
+    const partnersEntries = Object.entries(AFFILIATE_CONFIG.partners || {});
     const partnersData = [];
+    const templateMisses = [];
 
     // --- Build partner links ---
-    for (const p of partners) {
-      const template = affiliateTemplates[p.name.toLowerCase().replace(/\s+/g, "")];
-      let targetUrl;
+    for (const [rawKey, p] of partnersEntries) {
+      try {
+        const key = normalizeKey(rawKey); // should match affiliateTemplates keys
+        const template = affiliateTemplates[key];
 
-      if (template) {
-        targetUrl = fillTemplate(template.template, {
+        // Build basic data payload for templates
+        const templateData = {
           slug,
-          destination: name || city || country,
+          destination: name || city || country || "",
           checkin: "2025-10-06",
           checkout: "2025-10-12",
           adults: 2,
@@ -183,117 +213,183 @@ exports.handler = async (event) => {
           depart: "2025-10-06",
           return: "2025-10-12",
           tripType: "ROUNDTRIP",
+        };
+
+        let targetUrl = "";
+
+        if (template && template.template) {
+          targetUrl = fillTemplate(template.template, templateData);
+        } else {
+          // Log miss and create a safe fallback
+          templateMisses.push(key);
+          await logToSupabase("warn", `No template found for partner key: ${key}`, { partner: p.name, key });
+          const fallbackDomain = key.replace(/_/g, "");
+          const fallbackDest = encodeURIComponent(templateData.destination || "");
+          targetUrl = `https://${fallbackDomain}.com/search?query=${fallbackDest}`;
+        }
+
+        // Build final deep link: some partners (like Lonely Planet) should not be TP-wrapped
+        let deep_link;
+        const normalizedName = String(p.name || "").toLowerCase();
+        if (normalizedName.includes("lonely") || !p.baseUrl) {
+          // preserve direct targetUrl for partners without TP config
+          deep_link = targetUrl;
+        } else {
+          deep_link = buildTpLink({
+            baseUrl: p.baseUrl,
+            marker,
+            trs,
+            partner_id: p.partner_id,
+            campaign_id: p.campaign_id,
+            targetUrl,
+          });
+        }
+
+        partnersData.push({
+          partner_name: p.name,
+          partner_code: key.replace(/[^a-z0-9_]/g, "_"), // safe partner_code for DB
+          deep_link,
+          logo_url: template?.logo_url || "",
+          template_used: !!template,
         });
-      } else {
-        await logToSupabase("warn", `No template found for ${p.name}`, { partner: p.name });
-        targetUrl = `https://${p.name.toLowerCase().replace(/\s+/g, "")}.com/search?query=${encodeURIComponent(
-          name || city || country
-        )}`;
+      } catch (innerErr) {
+        // non-fatal for one partner: log and continue building others
+        await logToSupabase("error", "Error building partner link", {
+          partner: p.name,
+          error: innerErr.message,
+        });
       }
-
-      const deep_link =
-        p.name === "Lonely Planet"
-          ? targetUrl
-          : buildTpLink({ baseUrl: p.baseUrl, marker, trs, partner_id: p.partner_id, campaign_id: p.campaign_id, targetUrl });
-
-      partnersData.push({
-        partner_name: p.name,
-        partner_code: p.name.toLowerCase().replace(/\s+/g, "_"),
-        deep_link,
-        logo_url: template?.logo_url || "",
-      });
     }
 
-    await logToSupabase("info", "Built partner link array", { count: partnersData.length });
+    await logToSupabase("info", "Built partner link array", { count: partnersData.length, templateMisses });
 
     // --- Insert or update affiliate data ---
     const linksToInsert = [];
 
     for (const partner of partnersData) {
-      const { data: existing } = await supabase
-        .from("affiliates")
-        .select("affiliate_id")
-        .eq("partner_code", partner.partner_code)
-        .maybeSingle();
-
-      let affiliate_id = existing?.affiliate_id;
-
-      if (!affiliate_id) {
-        await logToSupabase("info", "Upserting affiliate record", { partner: partner.partner_name });
-
-        const { data: aff, error: insertErr } = await supabase
+      try {
+        // defensive: check select error
+        const { data: existing, error: selectErr } = await supabase
           .from("affiliates")
-          .upsert(
-            [
-              {
-                partner_name: partner.partner_name,
-                partner_code: partner.partner_code,
-                logo_url: partner.logo_url,
-                base_url: partner.deep_link,
-                active: true,
-              },
-            ],
-            { onConflict: ["partner_code"] }
-          )
-          .select()
-          .single();
+          .select("affiliate_id")
+          .eq("partner_code", partner.partner_code)
+          .maybeSingle();
 
-        if (insertErr) throw insertErr;
+        if (selectErr) {
+          await logToSupabase("error", "Error selecting affiliate", { partner: partner.partner_code, error: selectErr.message });
+          throw selectErr;
+        }
 
-        affiliate_id = aff?.affiliate_id;
+        let affiliate_id = existing?.affiliate_id;
 
         if (!affiliate_id) {
-          const { data: existingAff, error: fetchErr } = await supabase
+          await logToSupabase("info", "Upserting affiliate record", { partner: partner.partner_name, partner_code: partner.partner_code });
+
+          const { data: aff, error: insertErr } = await supabase
             .from("affiliates")
-            .select("affiliate_id")
-            .eq("partner_code", partner.partner_code)
-            .maybeSingle();
+            .upsert(
+              [
+                {
+                  partner_name: partner.partner_name,
+                  partner_code: partner.partner_code,
+                  logo_url: partner.logo_url,
+                  base_url: partner.deep_link,
+                  active: true,
+                },
+              ],
+              { onConflict: ["partner_code"] }
+            )
+            .select()
+            .single();
 
-          if (fetchErr) throw fetchErr;
-          affiliate_id = existingAff?.affiliate_id;
+          if (insertErr) {
+            await logToSupabase("error", "Affiliate upsert error", { partner: partner.partner_code, error: insertErr.message });
+            throw insertErr;
+          }
+
+          affiliate_id = aff?.affiliate_id;
+
+          // double-check
+          if (!affiliate_id) {
+            const { data: existingAff, error: fetchErr } = await supabase
+              .from("affiliates")
+              .select("affiliate_id")
+              .eq("partner_code", partner.partner_code)
+              .maybeSingle();
+
+            if (fetchErr) {
+              await logToSupabase("error", "Failed to fetch affiliate after upsert", { partner: partner.partner_code, error: fetchErr.message });
+              throw fetchErr;
+            }
+            affiliate_id = existingAff?.affiliate_id;
+          }
         }
-      }
 
-      if (!affiliate_id) {
-        throw new Error(`Missing affiliate_id for partner ${partner.partner_name}`);
-      }
+        if (!affiliate_id) {
+          await logToSupabase("error", "Missing affiliate_id after attempts", { partner: partner.partner_code });
+          throw new Error(`Missing affiliate_id for partner ${partner.partner_name}`);
+        }
 
-      linksToInsert.push({
-        destination_slug: slug,
-        affiliate_id,
-        partner_code: partner.partner_code,
-        deep_link: partner.deep_link,
-        metadata: { city, country },
-      });
+        linksToInsert.push({
+          destination_slug: slug,
+          affiliate_id,
+          partner_code: partner.partner_code,
+          deep_link: partner.deep_link,
+          metadata: { city: city || null, country: country || null },
+        });
+      } catch (loopErr) {
+        // log and continue with other partners
+        await logToSupabase("error", "Skipping partner due to error", { partner: partner.partner_code, error: loopErr.message });
+      }
     }
 
-    // --- Safe Upsert ---
+    if (linksToInsert.length === 0) {
+      await logToSupabase("warn", "No links prepared for upsert", { slug, name, built: partnersData.length });
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          status: "ok",
+          message: `No affiliate links prepared for ${name}. Check logs.`,
+          partners_prepared: partnersData.length,
+          partners_upserted: 0,
+          debug: debug ? { partnersData, templateMisses } : undefined,
+        }),
+      };
+    }
+
+    // --- Safe Upsert into partner_affiliate_links ---
     try {
       const { error: upsertErr } = await supabase
         .from("partner_affiliate_links")
         .upsert(linksToInsert, {
           onConflict: ["destination_slug", "affiliate_id"],
-          ignoreDuplicates: false,
         });
 
-      if (upsertErr) throw upsertErr;
+      if (upsertErr) {
+        await logToSupabase("error", "Upsert to partner_affiliate_links failed", { error: upsertErr.message });
+        throw upsertErr;
+      }
     } catch (upsertCatchErr) {
-      await logToSupabase("error", "Upsert failed", { error: upsertCatchErr.message });
+      await logToSupabase("error", "Upsert exception", { error: upsertCatchErr.message });
       throw upsertCatchErr;
     }
 
     await logToSupabase("info", "Affiliate links successfully inserted", { count: linksToInsert.length });
 
+    // Successful response; include debug data if requested
     return {
       statusCode: 200,
       body: JSON.stringify({
         status: "ok",
         message: `Affiliate links generated for ${name}`,
-        partners: linksToInsert.length,
+        partners_prepared: partnersData.length,
+        partners_upserted: linksToInsert.length,
+        debug: debug ? { partnersData, templateMisses } : undefined,
       }),
     };
   } catch (err) {
-    await logToSupabase("error", "Fatal error during affiliate link generation", { error: err.message });
+    // Top-level error handler
+    await logToSupabase("error", "Fatal error during affiliate link generation", { error: err.message, stack: err.stack });
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };

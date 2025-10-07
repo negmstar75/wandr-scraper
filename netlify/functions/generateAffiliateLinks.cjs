@@ -1,6 +1,6 @@
 // netlify/functions/generateAffiliateLinks.cjs
-
 const { createClient } = require("@supabase/supabase-js");
+const { logToSupabase } = require("./utils/logger.cjs");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -8,7 +8,7 @@ const supabase = createClient(
 );
 
 // ------------------------------------------------------
-// 🌍 Deep-link templates (previously affiliateTemplates.js)
+// 🌍 Deep-link templates
 // ------------------------------------------------------
 const affiliateTemplates = {
   booking: {
@@ -116,7 +116,7 @@ const affiliateTemplates = {
 };
 
 // ------------------------------------------------------
-// 🔗 Affiliate base configuration (Travelpayouts network)
+// 🔗 Affiliate base configuration
 // ------------------------------------------------------
 const AFFILIATE_CONFIG = {
   marker: "466615",
@@ -160,7 +160,7 @@ exports.handler = async (event) => {
     if (!slug || !name)
       return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
 
-    console.log("[generateAffiliateLinks] 🚀 Start:", { slug, name, country, city });
+    await logToSupabase("info", "Start affiliate link generation", { slug, name, country, city });
 
     const { marker, trs } = AFFILIATE_CONFIG;
     const partners = Object.values(AFFILIATE_CONFIG.partners);
@@ -185,6 +185,7 @@ exports.handler = async (event) => {
           tripType: "ROUNDTRIP",
         });
       } else {
+        await logToSupabase("warn", `No template found for partner ${p.name}`, { partner: p.name });
         targetUrl = `https://${p.name.toLowerCase().replace(/\s+/g, "")}.com/search?query=${encodeURIComponent(
           name || city || country
         )}`;
@@ -203,7 +204,7 @@ exports.handler = async (event) => {
       });
     }
 
-    console.log("[generateAffiliateLinks] Built partner link array:", partnersData);
+    await logToSupabase("info", "Built partner link array", { count: partnersData.length });
 
     const linksToInsert = [];
     for (const partner of partnersData) {
@@ -215,7 +216,7 @@ exports.handler = async (event) => {
 
       let affiliate_id = existing?.id;
       if (!affiliate_id) {
-        console.log(`[generateAffiliateLinks] ➕ Creating new affiliate entry for ${partner.partner_name}`);
+        await logToSupabase("info", `Creating new affiliate entry`, { partner: partner.partner_name });
         const { data: aff, error: insertErr } = await supabase
           .from("affiliates")
           .insert([
@@ -242,17 +243,27 @@ exports.handler = async (event) => {
       });
     }
 
-    console.log("[generateAffiliateLinks] Attempting Supabase upsert:", linksToInsert.length);
     const { error: upsertErr } = await supabase
       .from("partner_affiliate_links")
       .upsert(linksToInsert, { onConflict: "destination_slug,affiliate_id" });
 
-    if (upsertErr) throw upsertErr;
+    if (upsertErr) {
+      await logToSupabase("error", "Supabase upsert failed", { error: upsertErr.message });
+      throw upsertErr;
+    }
 
-    console.log(`[generateAffiliateLinks] ✅ Successfully inserted ${linksToInsert.length} links`);
-    return { statusCode: 200, body: JSON.stringify({ status: "ok", message: `Affiliate links generated for ${name}`, partners: linksToInsert.length }) };
+    await logToSupabase("info", "Affiliate links successfully inserted", { count: linksToInsert.length });
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        status: "ok",
+        message: `Affiliate links generated for ${name}`,
+        partners: linksToInsert.length,
+      }),
+    };
   } catch (err) {
-    console.error("[generateAffiliateLinks] 💥 Fatal error", err);
+    await logToSupabase("error", "Fatal error during affiliate link generation", { error: err.message });
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };

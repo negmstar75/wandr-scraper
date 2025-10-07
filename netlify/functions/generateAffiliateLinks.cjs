@@ -164,7 +164,6 @@ exports.handler = async (event) => {
 
     const { marker, trs } = AFFILIATE_CONFIG;
     const partners = Object.values(AFFILIATE_CONFIG.partners);
-
     const partnersData = [];
 
     // --- Build partner links ---
@@ -213,11 +212,11 @@ exports.handler = async (event) => {
     for (const partner of partnersData) {
       const { data: existing } = await supabase
         .from("affiliates")
-        .select("id")
+        .select("affiliate_id")
         .eq("partner_code", partner.partner_code)
         .maybeSingle();
 
-      let affiliate_id = existing?.id;
+      let affiliate_id = existing?.affiliate_id;
 
       if (!affiliate_id) {
         await logToSupabase("info", "Upserting affiliate record", { partner: partner.partner_name });
@@ -241,18 +240,17 @@ exports.handler = async (event) => {
 
         if (insertErr) throw insertErr;
 
-        affiliate_id = aff?.id;
+        affiliate_id = aff?.affiliate_id;
 
-        // ✅ fallback if Supabase returns no data
         if (!affiliate_id) {
           const { data: existingAff, error: fetchErr } = await supabase
             .from("affiliates")
-            .select("id")
+            .select("affiliate_id")
             .eq("partner_code", partner.partner_code)
             .maybeSingle();
 
           if (fetchErr) throw fetchErr;
-          affiliate_id = existingAff?.id;
+          affiliate_id = existingAff?.affiliate_id;
         }
       }
 

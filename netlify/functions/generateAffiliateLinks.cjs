@@ -221,18 +221,21 @@ exports.handler = async (event) => {
 
       if (!affiliate_id) {
         const { data: aff, error: insertErr } = await supabase
-          .from("affiliates")
-          .insert([
-            {
-              partner_name: partner.partner_name,
-              partner_code: partner.partner_code,
-              logo_url: partner.logo_url,
-              base_url: partner.deep_link,
-              active: true,
-            },
-          ])
-          .select()
-          .single();
+  .from("affiliates")
+  .upsert(
+    [
+      {
+        partner_name: partner.partner_name,
+        partner_code: partner.partner_code,
+        logo_url: partner.logo_url,
+        base_url: partner.deep_link,
+        active: true,
+      },
+    ],
+    { onConflict: ["partner_code"] }
+  )
+  .select()
+  .single();
 
         if (insertErr) throw insertErr;
         affiliate_id = aff.id;

@@ -207,7 +207,7 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Built partner link array", { count: partnersData.length });
 
-    // --- Insert or update affiliate data ---
+        // --- Insert or update affiliate data ---
     const linksToInsert = [];
 
     for (const partner of partnersData) {
@@ -220,38 +220,45 @@ exports.handler = async (event) => {
       let affiliate_id = existing?.id;
 
       if (!affiliate_id) {
-        let { data: aff, error: insertErr } = await supabase
-  .from("affiliates")
-  .upsert(
-    [
-      {
-        partner_name: partner.partner_name,
-        partner_code: partner.partner_code,
-        logo_url: partner.logo_url,
-        base_url: partner.deep_link,
-        active: true,
-      },
-    ],
-    { onConflict: ["partner_code"] }
-  )
-  .select()
-  .single();
+        await logToSupabase("info", "Upserting affiliate record", { partner: partner.partner_name });
 
-if (insertErr) throw insertErr;
+        const { data: aff, error: insertErr } = await supabase
+          .from("affiliates")
+          .upsert(
+            [
+              {
+                partner_name: partner.partner_name,
+                partner_code: partner.partner_code,
+                logo_url: partner.logo_url,
+                base_url: partner.deep_link,
+                active: true,
+              },
+            ],
+            { onConflict: ["partner_code"] }
+          )
+          .select()
+          .single();
 
-let affiliate_id = aff?.id;
+        if (insertErr) throw insertErr;
 
-if (!affiliate_id) {
-  // The upsert found an existing partner and didn’t return data — fetch it
-  const { data: existingAff, error: fetchErr } = await supabase
-    .from("affiliates")
-    .select("id")
-    .eq("partner_code", partner.partner_code)
-    .maybeSingle();
+        affiliate_id = aff?.id;
 
-  if (fetchErr) throw fetchErr;
-  affiliate_id = existingAff?.id;
-}
+        // ✅ fallback: fetch if Supabase returned no data
+        if (!affiliate_id) {
+          const { data: existingAff, error: fetchErr } = await supabase
+            .from("affiliates")
+            .select("id")
+            .eq("partner_code", partner.partner_code)
+            .maybeSingle();
+
+          if (fetchErr) throw fetchErr;
+          affiliate_id = existingAff?.id;
+        }
+      }
+
+      if (!affiliate_id) {
+        throw new Error(`Missing affiliate_id for partner ${partner.partner_name}`);
+      }
 
       linksToInsert.push({
         destination_slug: slug,
@@ -278,17 +285,3 @@ if (!affiliate_id) {
     }
 
     await logToSupabase("info", "Affiliate links successfully inserted", { count: linksToInsert.length });
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        status: "ok",
-        message: `Affiliate links generated for ${name}`,
-        partners: linksToInsert.length,
-      }),
-    };
-  } catch (err) {
-    await logToSupabase("error", "Fatal error during affiliate link generation", { error: err.message });
-    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
-  }
-};

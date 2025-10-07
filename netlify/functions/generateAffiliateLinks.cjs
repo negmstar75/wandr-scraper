@@ -140,7 +140,7 @@ const AFFILIATE_CONFIG = {
 };
 
 // ------------------------------------------------------
-// 🧩 Helper functions
+// 🧩 Helpers
 // ------------------------------------------------------
 function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl }) {
   const encoded = encodeURIComponent(targetUrl);
@@ -152,7 +152,7 @@ function fillTemplate(template, data) {
 }
 
 // ------------------------------------------------------
-// 🏗️ Main handler
+// 🏗️ Handler
 // ------------------------------------------------------
 exports.handler = async (event) => {
   try {
@@ -167,6 +167,7 @@ exports.handler = async (event) => {
 
     const partnersData = [];
 
+    // --- Build partner links ---
     for (const p of partners) {
       const template = affiliateTemplates[p.name.toLowerCase().replace(/\s+/g, "")];
       let targetUrl;
@@ -185,7 +186,7 @@ exports.handler = async (event) => {
           tripType: "ROUNDTRIP",
         });
       } else {
-        await logToSupabase("warn", `No template found for partner ${p.name}`, { partner: p.name });
+        await logToSupabase("warn", `No template found for ${p.name}`, { partner: p.name });
         targetUrl = `https://${p.name.toLowerCase().replace(/\s+/g, "")}.com/search?query=${encodeURIComponent(
           name || city || country
         )}`;
@@ -206,17 +207,19 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Built partner link array", { count: partnersData.length });
 
-    const { error: upsertErr } = await supabase
-  .from("partner_affiliate_links")
-  .upsert(linksToInsert, {
-    onConflict: ["destination_slug", "affiliate_id"],
-    ignoreDuplicates: false,
-  });
+    // --- Insert or update affiliate data ---
+    const linksToInsert = [];
 
+    for (const partner of partnersData) {
+      const { data: existing } = await supabase
+        .from("affiliates")
+        .select("id")
+        .eq("partner_code", partner.partner_code)
+        .maybeSingle();
 
       let affiliate_id = existing?.id;
+
       if (!affiliate_id) {
-        await logToSupabase("info", `Creating new affiliate entry`, { partner: partner.partner_name });
         const { data: aff, error: insertErr } = await supabase
           .from("affiliates")
           .insert([
@@ -230,6 +233,7 @@ exports.handler = async (event) => {
           ])
           .select()
           .single();
+
         if (insertErr) throw insertErr;
         affiliate_id = aff.id;
       }
@@ -243,13 +247,19 @@ exports.handler = async (event) => {
       });
     }
 
-    const { error: upsertErr } = await supabase
-      .from("partner_affiliate_links")
-      .upsert(linksToInsert, { onConflict: "destination_slug,affiliate_id" });
+    // --- Safe Upsert ---
+    try {
+      const { error: upsertErr } = await supabase
+        .from("partner_affiliate_links")
+        .upsert(linksToInsert, {
+          onConflict: ["destination_slug", "affiliate_id"],
+          ignoreDuplicates: false,
+        });
 
-    if (upsertErr) {
-      await logToSupabase("error", "Supabase upsert failed", { error: upsertErr.message });
-      throw upsertErr;
+      if (upsertErr) throw upsertErr;
+    } catch (upsertCatchErr) {
+      await logToSupabase("error", "Upsert failed", { error: upsertCatchErr.message });
+      throw upsertCatchErr;
     }
 
     await logToSupabase("info", "Affiliate links successfully inserted", { count: linksToInsert.length });

@@ -207,7 +207,7 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Built partner link array", { count: partnersData.length });
 
-        // --- Insert or update affiliate data ---
+    // --- Insert or update affiliate data ---
     const linksToInsert = [];
 
     for (const partner of partnersData) {
@@ -243,7 +243,7 @@ exports.handler = async (event) => {
 
         affiliate_id = aff?.id;
 
-        // ✅ fallback: fetch if Supabase returned no data
+        // ✅ fallback if Supabase returns no data
         if (!affiliate_id) {
           const { data: existingAff, error: fetchErr } = await supabase
             .from("affiliates")
@@ -285,3 +285,17 @@ exports.handler = async (event) => {
     }
 
     await logToSupabase("info", "Affiliate links successfully inserted", { count: linksToInsert.length });
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        status: "ok",
+        message: `Affiliate links generated for ${name}`,
+        partners: linksToInsert.length,
+      }),
+    };
+  } catch (err) {
+    await logToSupabase("error", "Fatal error during affiliate link generation", { error: err.message });
+    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+  }
+};

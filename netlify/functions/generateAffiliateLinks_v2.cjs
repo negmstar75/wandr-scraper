@@ -9,7 +9,6 @@ const supabase = createClient(
 
 // -----------------------------
 // Templates (multi-variant)
-// (same set used earlier; trim/extend as needed)
 // -----------------------------
 const affiliateTemplates = {
   booking: {
@@ -60,7 +59,7 @@ const affiliateTemplates = {
 };
 
 // -----------------------------
-// AFFILIATE CONFIG (TP wrapper, same keys as affiliateTemplates)
+// AFFILIATE CONFIG (TP wrapper)
 // -----------------------------
 const AFFILIATE_CONFIG = {
   marker: "466615",
@@ -112,6 +111,15 @@ function getQuery(event, name, fallback = undefined) {
 function isEmptyString(s) {
   return s === undefined || s === null || String(s).trim() === "";
 }
+function todayISO() {
+  const d = new Date();
+  return d.toISOString().split("T")[0];
+}
+function plusDaysISO(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split("T")[0];
+}
 
 // -----------------------------
 // Handler
@@ -126,7 +134,7 @@ exports.handler = async (event) => {
     const origin = getQuery(event, "origin");
     const depart = getQuery(event, "depart");
     const ret = getQuery(event, "return");
-    const adults = getQuery(event, "adults") || 2;
+    const adults = parseInt(getQuery(event, "adults", "2"), 10) || 2;
     debug = getQuery(event, "debug", "false") === "true";
 
     if (!slug || !name) {
@@ -140,69 +148,28 @@ exports.handler = async (event) => {
     const partnersEntries = Object.entries(AFFILIATE_CONFIG.partners || {});
     const allPartnersData = [];
     const templateMisses = [];
-    const slugPart = slug.split("/").pop() || slug;
-    const baseDestination = name || city || country || "";
+
+    const slugPart = typeof slug === "string" ? slug.split("/").pop() : slug;
+    const destination = city || name || country || "";
+    const checkin = depart || todayISO();
+    const checkout = ret || plusDaysISO(3);
 
     // Build partner list (legacy + variants)
     for (const [rawKey, pConfig] of partnersEntries) {
-      const baseKey = normalizeKey(rawKey);
-      const partnerTemplates = affiliateTemplates[baseKey];
-
-      // Legacy single link (preserve previous behavior)
       try {
-        let legacyTarget;
-        if (partnerTemplates && partnerTemplates.variants) {
-          const prefer = partnerTemplates.variants.stays ? "stays" : Object.keys(partnerTemplates.variants)[0];
-          legacyTarget = fillTemplate(partnerTemplates.variants[prefer].template, {
-            slug: slugPart,
-            destination: baseDestination,
-            checkin: "2025-10-06",
-            checkout: "2025-10-12",
-            adults,
-            children: 0,
-            origin: origin || "",
-            depart: depart || "",
-            return: ret || "",
-            tripType: "ROUNDTRIP",
-            country,
-          });
-        } else {
-          legacyTarget = `https://${baseKey}.com/search?query=${encodeURIComponent(baseDestination)}`;
-        }
+        const baseKey = normalizeKey(rawKey);
+        const partnerTemplates = affiliateTemplates[baseKey];
 
-        const legacyDeepLink =
-          String(pConfig.name || "").toLowerCase().includes("lonely") || !pConfig.baseUrl
-            ? legacyTarget
-            : buildTpLink({
-                baseUrl: pConfig.baseUrl,
-                marker,
-                trs,
-                partner_id: pConfig.partner_id,
-                campaign_id: pConfig.campaign_id,
-                targetUrl: legacyTarget,
-              });
-
-        allPartnersData.push({
-          partner_name: pConfig.name,
-          partner_code: baseKey,
-          deep_link: legacyDeepLink,
-          logo_url: partnerTemplates?.logo_url || "",
-          variant: "legacy",
-          template_used: !!(partnerTemplates && partnerTemplates.variants),
-        });
-      } catch (errLegacy) {
-        await logToSupabase("error", "Legacy link build failed", { partner: rawKey, err: errLegacy.message });
-      }
-
-      // Variant entries
-      if (partnerTemplates && partnerTemplates.variants) {
-        for (const [variantKey, variantObj] of Object.entries(partnerTemplates.variants)) {
-          try {
-            const templateData = {
+        // Legacy single link (preserve previous behavior)
+        try {
+          let legacyTarget;
+          if (partnerTemplates && partnerTemplates.variants) {
+            const prefer = partnerTemplates.variants.stays ? "stays" : Object.keys(partnerTemplates.variants)[0];
+            legacyTarget = fillTemplate(partnerTemplates.variants[prefer].template, {
               slug: slugPart,
-              destination: baseDestination,
-              checkin: "2025-10-06",
-              checkout: "2025-10-12",
+              destination,
+              checkin,
+              checkout,
               adults,
               children: 0,
               origin: origin || "",
@@ -210,76 +177,127 @@ exports.handler = async (event) => {
               return: ret || "",
               tripType: "ROUNDTRIP",
               country,
-            };
+            });
+          } else {
+            legacyTarget = `https://${baseKey}.com/search?query=${encodeURIComponent(destination)}`;
+          }
 
-            // Partner-specific suppressions
-            if (baseKey === "airalo") {
-              templateData.country = country || baseDestination;
-              templateData.destination = templateData.country;
+          const legacyDeepLink =
+            String(pConfig.name || "").toLowerCase().includes("lonely") || !pConfig.baseUrl
+              ? legacyTarget
+              : buildTpLink({
+                  baseUrl: pConfig.baseUrl,
+                  marker,
+                  trs,
+                  partner_id: pConfig.partner_id,
+                  campaign_id: pConfig.campaign_id,
+                  targetUrl: legacyTarget,
+                });
+
+          allPartnersData.push({
+            partner_name: pConfig.name,
+            partner_code: baseKey,
+            deep_link: legacyDeepLink,
+            logo_url: partnerTemplates?.logo_url || "",
+            variant: "legacy",
+            template_used: !!(partnerTemplates && partnerTemplates.variants),
+          });
+        } catch (errLegacy) {
+          await logToSupabase("error", "Legacy link build failed", { partner: rawKey, err: errLegacy.message });
+        }
+
+        // Variant entries
+        if (partnerTemplates && partnerTemplates.variants) {
+          for (const [variantKey, variantObj] of Object.entries(partnerTemplates.variants)) {
+            try {
+              const templateData = {
+                slug: slugPart,
+                destination,
+                checkin,
+                checkout,
+                adults,
+                children: 0,
+                origin: origin || "",
+                depart: depart || "",
+                return: ret || "",
+                tripType: "ROUNDTRIP",
+                country,
+              };
+
+              // Partner-specific suppressions / overrides
+              if (baseKey === "airalo") {
+                templateData.country = (country || name || city || "").toLowerCase();
+                templateData.destination = templateData.country;
+              }
+              if (baseKey === "rentalcars") templateData.destination = destination;
+              if (baseKey === "hostelworld") templateData.destination = destination;
+              if (baseKey === "gocity" && variantKey === "country") templateData.country = (country || destination).toLowerCase();
+
+              // Build target URL
+              let targetUrl = fillTemplate(variantObj.template, templateData);
+
+              // If template produced an obviously wrong URL or empty, fall back
+              if (!targetUrl || targetUrl.includes("undefined") || targetUrl.includes("null")) {
+                templateMisses.push(`${baseKey}:${variantKey}`);
+                await logToSupabase("warn", "Variant template produced empty/invalid — using fallback", { partner: baseKey, variantKey, templateData });
+                targetUrl = `https://${baseKey}.com/search?query=${encodeURIComponent(destination)}`;
+              }
+
+              const deep_link =
+                String(pConfig.name || "").toLowerCase().includes("lonely") || !pConfig.baseUrl
+                  ? targetUrl
+                  : buildTpLink({
+                      baseUrl: pConfig.baseUrl,
+                      marker,
+                      trs,
+                      partner_id: pConfig.partner_id,
+                      campaign_id: pConfig.campaign_id,
+                      targetUrl,
+                    });
+
+              const partner_code = safePartnerCode(baseKey, variantKey);
+
+              allPartnersData.push({
+                partner_name: pConfig.name,
+                partner_code,
+                deep_link,
+                logo_url: variantObj?.logo_url || "",
+                variant: variantKey,
+                template_used: true,
+              });
+            } catch (variantErr) {
+              await logToSupabase("error", "Error building variant link", { partner: rawKey, variant: variantKey, error: variantErr.message });
             }
-            if (baseKey === "rentalcars") templateData.destination = baseDestination;
-            if (baseKey === "hostelworld") templateData.destination = baseDestination;
-            if (baseKey === "gocity" && variantKey === "country") templateData.country = (country || baseDestination).toLowerCase();
-
-            let targetUrl = fillTemplate(variantObj.template, templateData);
-            if (!targetUrl) {
-              templateMisses.push(`${baseKey}:${variantKey}`);
-              await logToSupabase("warn", "Variant template empty — using fallback", { partner: baseKey, variantKey });
-              targetUrl = `https://${baseKey}.com/search?query=${encodeURIComponent(baseDestination)}`;
-            }
-
-            const deep_link =
-              String(pConfig.name || "").toLowerCase().includes("lonely") || !pConfig.baseUrl
-                ? targetUrl
-                : buildTpLink({
-                    baseUrl: pConfig.baseUrl,
-                    marker,
-                    trs,
-                    partner_id: pConfig.partner_id,
-                    campaign_id: pConfig.campaign_id,
-                    targetUrl,
-                  });
-
-            const partner_code = safePartnerCode(baseKey, variantKey);
-
+          }
+        } else {
+          // fallback single
+          try {
+            const partner_code = safePartnerCode(baseKey, "default");
+            const fallbackUrl = `https://${baseKey}.com/search?query=${encodeURIComponent(destination)}`;
+            const deep_link = pConfig.baseUrl
+              ? buildTpLink({
+                  baseUrl: pConfig.baseUrl,
+                  marker,
+                  trs,
+                  partner_id: pConfig.partner_id,
+                  campaign_id: pConfig.campaign_id,
+                  targetUrl: fallbackUrl,
+                })
+              : fallbackUrl;
             allPartnersData.push({
               partner_name: pConfig.name,
               partner_code,
               deep_link,
-              logo_url: variantObj?.logo_url || "",
-              variant: variantKey,
-              template_used: true,
+              logo_url: "",
+              variant: "default",
+              template_used: false,
             });
-          } catch (variantErr) {
-            await logToSupabase("error", "Error building variant link", { partner: rawKey, variant: variantKey, error: variantErr.message });
+          } catch (fbErr) {
+            await logToSupabase("error", "Fallback build failed", { partner: rawKey, err: fbErr.message });
           }
         }
-      } else {
-        // fallback single
-        try {
-          const partner_code = safePartnerCode(baseKey, "default");
-          const fallbackUrl = `https://${baseKey}.com/search?query=${encodeURIComponent(baseDestination)}`;
-          const deep_link = pConfig.baseUrl
-            ? buildTpLink({
-                baseUrl: pConfig.baseUrl,
-                marker,
-                trs,
-                partner_id: pConfig.partner_id,
-                campaign_id: pConfig.campaign_id,
-                targetUrl: fallbackUrl,
-              })
-            : fallbackUrl;
-          allPartnersData.push({
-            partner_name: pConfig.name,
-            partner_code,
-            deep_link,
-            logo_url: "",
-            variant: "default",
-            template_used: false,
-          });
-        } catch (fbErr) {
-          await logToSupabase("error", "Fallback build failed", { partner: rawKey, err: fbErr.message });
-        }
+      } catch (outerErr) {
+        await logToSupabase("error", "Partner loop fatal error (non-blocking)", { partner: rawKey, error: outerErr.message });
       }
     } // end partners loop
 
@@ -288,21 +306,18 @@ exports.handler = async (event) => {
     // -----------------------
     // Upsert affiliates (one by one) and build affiliate_id map
     // -----------------------
-    const affiliateIdMap = {}; // partner_code -> affiliate_id
+    const affiliateIdMap = {};
     for (const partner of allPartnersData) {
       const code = partner.partner_code;
-      if (affiliateIdMap[code]) continue; // already resolved
+      if (affiliateIdMap[code]) continue;
 
-      // try select
       const { data: existing, error: selectErr } = await supabase.from("affiliates").select("affiliate_id").eq("partner_code", code).maybeSingle();
       if (selectErr) {
         await logToSupabase("error", "Error selecting affiliate", { partner_code: code, error: selectErr.message });
-        // continue to attempt upsert
       }
       let affiliate_id = existing?.affiliate_id;
 
       if (!affiliate_id) {
-        // upsert affiliate row
         const { data: aff, error: insertErr } = await supabase
           .from("affiliates")
           .upsert(
@@ -322,11 +337,10 @@ exports.handler = async (event) => {
 
         if (insertErr) {
           await logToSupabase("error", "Affiliate upsert error", { partner_code: code, error: insertErr.message });
-          // attempt to fetch again
           const { data: existingAff, error: fetchErr } = await supabase.from("affiliates").select("affiliate_id").eq("partner_code", code).maybeSingle();
           if (fetchErr) {
             await logToSupabase("error", "Failed to fetch affiliate after upsert", { partner_code: code, error: fetchErr.message });
-            continue; // skip this partner
+            continue;
           }
           affiliate_id = existingAff?.affiliate_id;
         } else {
@@ -354,10 +368,7 @@ exports.handler = async (event) => {
         continue;
       }
       const key = `${slug}::${affiliate_id}`;
-      if (seenLinkKeys.has(key)) {
-        // duplicate in same batch -> skip
-        continue;
-      }
+      if (seenLinkKeys.has(key)) continue;
       seenLinkKeys.add(key);
       linksToInsert.push({
         destination_slug: slug,
@@ -371,7 +382,16 @@ exports.handler = async (event) => {
 
     if (linksToInsert.length === 0) {
       await logToSupabase("warn", "No links prepared for upsert (after dedupe)", { slug, built: allPartnersData.length });
-      return { statusCode: 200, body: JSON.stringify({ status: "ok", message: `No affiliate links prepared for ${name}`, partners_prepared: allPartnersData.length, partners_upserted: 0, debug: debug ? { allPartnersData, templateMisses } : undefined }) };
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          status: "ok",
+          message: `No affiliate links prepared for ${name}`,
+          partners_prepared: allPartnersData.length,
+          partners_upserted: 0,
+          debug: debug ? { allPartnersData, templateMisses } : undefined,
+        }),
+      };
     }
 
     // -----------------------
@@ -392,7 +412,6 @@ exports.handler = async (event) => {
 
     // -----------------------
     // Insert into specialized tables (idempotent checks)
-    // We'll check existence by affiliate_id + deep_link (safe proxy) or slug for guides
     // -----------------------
     const insertedSpecialCounts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
 
@@ -403,7 +422,6 @@ exports.handler = async (event) => {
         const variant = (link.variant || "").toLowerCase();
         const baseCode = link.partner_code.split("_")[0];
 
-        // helper: exists check by affiliate_id + deep_link
         async function existsInTable(table) {
           const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
           if (error) {
@@ -413,9 +431,8 @@ exports.handler = async (event) => {
           return !!data;
         }
 
-        // decide which table to insert into
-        const shouldInsertFlights = variant.includes("flight") || baseCode === "cheapoair" || baseCode === "cheapOair";
-        const shouldInsertHotels = variant.includes("stays") || baseCode === "booking" || baseCode === "expedia" || baseCode === "hostelworld" || baseCode === "rentalcars";
+        const shouldInsertFlights = variant.includes("flight") || baseCode === "cheapoair";
+        const shouldInsertHotels = variant.includes("stays") || ["booking", "expedia", "hostelworld", "rentalcars"].includes(baseCode);
         const shouldInsertActivities = variant.includes("activities") || variant.includes("attractions") || ["getyourguide","klook","tiqets","wegotrip","gocity","tripadvisor"].includes(baseCode);
         const shouldInsertGuides = ["lonelyplanet"].includes(baseCode) || variant.includes("book") || variant.includes("article") || variant.includes("itinerary");
 
@@ -424,8 +441,8 @@ exports.handler = async (event) => {
           if (!exists) {
             const payload = {
               affiliate_id,
+              destination_slug: slug,
               origin: origin || null,
-              destination: name || city || null,
               airline: null,
               flight_code: null,
               deep_link,
@@ -484,13 +501,12 @@ exports.handler = async (event) => {
         }
 
         if (shouldInsertGuides) {
-          // for guides prefer slug existence if possible
           const guideExists = await supabase.from("guides").select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
           if (!guideExists.error && !guideExists.data) {
             const payload = {
               affiliate_id,
               title: null,
-              slug: slugPart,
+              destination_slug: slug,
               category: variant || "ebook",
               deep_link,
               language: "en",

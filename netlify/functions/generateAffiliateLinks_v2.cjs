@@ -1,4 +1,5 @@
 // netlify/functions/generateAffiliateLinks_v2.cjs
+// generateAffiliateLinks_v2 — final, robust, mapping-aware (safe + backwards-compatible)
 const { createClient } = require("@supabase/supabase-js");
 const { logToSupabase } = require("./utils/logger.cjs");
 
@@ -20,12 +21,13 @@ const affiliateTemplates = {
         params: ["destination", "checkin", "checkout", "adults"],
       },
       attractions: {
-        template:
-          "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html",
+        // note: country + city_slug expected (e.g. "fr", "paris")
+        template: "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html",
         params: ["country", "city_slug"],
       },
     },
   },
+
   expedia: {
     name: "Expedia",
     variants: {
@@ -46,22 +48,45 @@ const affiliateTemplates = {
       },
     },
   },
+
   getyourguide: { name: "GetYourGuide", variants: { default: { template: "https://www.getyourguide.com/{slug}-l16/", params: ["slug"] } } },
+
   tripadvisor: { name: "Tripadvisor", variants: { attractions: { template: "https://www.tripadvisor.com/Attractions-g{slug}-Activities.html", params: ["slug"] } } },
+
   tiqets: { name: "Tiqets", variants: { default: { template: "https://www.tiqets.com/en/things-to-do-in-{slug}-c66746/", params: ["slug"] } } },
+
   klook: { name: "Klook", variants: { default: { template: "https://www.klook.com/search/result/?query={destination}&sort=most_relevant", params: ["destination"] } } },
+
   rentalcars: { name: "Rentalcars", variants: { default: { template: "https://www.rentalcars.com/SearchResults.do?locationName={destination}", params: ["destination"] } } },
+
   cheapoair: { name: "CheapOair", variants: { default: { template: "https://www.cheapoair.com/air/listing?d1={origin}&d2={destination}&dt1={depart}&dt2={return}&tripType={tripType}", params: ["origin","destination","depart","return","tripType"] } } },
+
   hostelworld: { name: "Hostelworld", variants: { default: { template: "https://www.hostelworld.com/s?q={destination}&from={checkin}&to={checkout}&guests={adults}", params: ["destination","checkin","checkout","adults"] } } },
+
   wegotrip: { name: "WeGoTrip", variants: { default: { template: "https://wegotrip.com/{slug}-d3/", params: ["slug"] }, search: { template: "https://wegotrip.com/search?query={destination}", params: ["destination"] } } },
+
   gocity: { name: "GoCity", variants: { default: { template: "https://gocity.com/en/{slug}/passes", params: ["slug"] }, country: { template: "https://gocity.com/en/{country}/", params: ["country"] } } },
+
   airalo: { name: "Airalo", variants: { esim: { template: "https://www.airalo.com/{country}-esim", params: ["country"] } } },
+
   lonelyplanet: {
     name: "Lonely Planet",
     variants: {
-      pocket: { template: "https://shop.lonelyplanet.com/products/pocket-{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program", params: ["slug"] },
-      product: { template: "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program", params: ["slug"] },
-      elsewhere: { template: "https://www.elsewhere.io/{country}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program", params: ["country"] },
+      pocket: {
+        template:
+          "https://shop.lonelyplanet.com/products/pocket-{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program",
+        params: ["slug"],
+      },
+      product: {
+        template:
+          "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program",
+        params: ["slug"],
+      },
+      elsewhere: {
+        template:
+          "https://www.elsewhere.io/{country}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program",
+        params: ["country"],
+      },
     },
   },
 };
@@ -113,7 +138,7 @@ function fillTemplate(template, data) {
   return template.replace(/\{(.*?)\}/g, (_, key) => encodeURIComponent(data[key] ?? ""));
 }
 function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl }) {
-  if (!baseUrl) return targetUrl;
+  if (!baseUrl) return targetUrl || "";
   const encoded = encodeURIComponent(targetUrl || "");
   return `${baseUrl}?marker=${marker}&trs=${trs}&p=${partner_id}&u=${encoded}&campaign_id=${campaign_id}`;
 }
@@ -123,7 +148,7 @@ function safePartnerCode(baseKey, variantKey) {
 }
 
 // -----------------------------
-// Handler
+// Main handler
 // -----------------------------
 exports.handler = async (event) => {
   let debug = false;
@@ -138,11 +163,11 @@ exports.handler = async (event) => {
     debug = getQuery(event, "debug", "false") === "true";
 
     if (!slug || !name) {
-      await logToSupabase("warn", "Missing required parameters", { slug, name, countryQ, cityQ });
+      await logToSupabase("warn", "Missing required parameters", { slug, name });
       return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
     }
 
-    // dates
+    // compute date vars
     const depart = todayISO(1); // tomorrow
     const ret = todayISO(8); // tomorrow +7
     const checkin = depart;
@@ -158,20 +183,32 @@ exports.handler = async (event) => {
     const city_slug = cityToSlug(city);
     const destination = name || city;
 
-    await logToSupabase("info", "Start affiliate generation v2.5", { slug, name, country, city, origin, mode, debug });
+    await logToSupabase("info", "Start affiliate generation v2.5 (auto mapping mode)", { slug, name, country, city, origin, mode, debug });
 
-    // read partner_mappings (if exists)
+    // -----------------------------
+    // Read partner_mappings (if present). If table missing -> fallback (log).
+    // -----------------------------
     let partnerMappings = [];
     try {
       const { data: pmRows, error: pmErr } = await supabase.from("partner_mappings").select("*").eq("active", true);
       if (pmErr) {
-        await logToSupabase("warn", "partner_mappings read error (non-blocking)", { error: pmErr.message });
-      } else partnerMappings = Array.isArray(pmRows) ? pmRows : [];
-    } catch (pmReadErr) {
-      await logToSupabase("warn", "partner_mappings read exception (non-blocking)", { error: pmReadErr.message });
+        // If relation doesn't exist or other critical error, log and continue without mapping
+        const msg = pmErr?.message || String(pmErr);
+        await logToSupabase("warn", "partner_mappings select returned error (will fallback)", { error: msg });
+        // If the table does not exist, we cannot create it reliably from runtime. In that case, continue without mapping.
+        partnerMappings = [];
+      } else {
+        partnerMappings = Array.isArray(pmRows) ? pmRows : [];
+      }
+    } catch (err) {
+      // Unexpected exception while reading mapping table; log and move on
+      await logToSupabase("warn", "Exception reading partner_mappings (fallback)", { error: err.message });
+      partnerMappings = [];
     }
 
+    // -----------------------------
     // Build partner dataset
+    // -----------------------------
     const partnersEntries = Object.entries(AFFILIATE_CONFIG.partners || {});
     const allPartnersData = [];
     const templateMisses = [];
@@ -180,12 +217,12 @@ exports.handler = async (event) => {
       const baseKey = rawKey;
       const tpl = affiliateTemplates[baseKey];
       if (!tpl) {
-        await logToSupabase("warn", "No template set for partner", { partner: baseKey });
+        await logToSupabase("warn", "Missing template set", { partner: baseKey });
         continue;
       }
 
       for (const [variantKey, variantObj] of Object.entries(tpl.variants)) {
-        // mode filtering
+        // Mode filtering
         if (mode === "activities") {
           const allowActivity = variantKey.match(/(attract|activ|default|search|country|pocket|product|elsewhere)/i)
             || ["getyourguide","klook","tiqets","wegotrip","gocity","tripadvisor"].includes(baseKey);
@@ -199,6 +236,7 @@ exports.handler = async (event) => {
         // mapping override check for this partner + slug
         const mapping = partnerMappings.find(r => r.partner_code === baseKey && r.destination_slug === slug);
 
+        // prepare template data
         const templateData = {
           slug: slug.split("/").pop(),
           city_slug: mapping?.override_slug || city_slug,
@@ -216,7 +254,7 @@ exports.handler = async (event) => {
           itinerary_id,
         };
 
-        // Lonely Planet multiple shop variants
+        // lonelyplanet shop variants (try multiple product slugs)
         if (baseKey === 'lonelyplanet' && (variantKey === 'product' || variantKey === 'pocket')) {
           const shopVariants = [`pocket-${city_slug}`, city_slug, `${city_slug}-travel-guide`, `${city_slug}-guide`];
           for (const s of shopVariants) {
@@ -226,13 +264,14 @@ exports.handler = async (event) => {
               partner_code: safePartnerCode(baseKey, `${variantKey}_${s}`),
               deep_link: target,
               variant: `${variantKey}_${s}`,
-              metadata: { mapping: !!mapping }
+              mapping_applied: !!mapping,
+              raw_target: target,
             });
           }
           continue;
         }
 
-        // Allow mapping.override_url to fully supply target
+        // allow mapping.override_url to fully supply target
         let targetUrl = mapping?.override_url || fillTemplate(variantObj.template, templateData);
 
         if (!targetUrl || /undefined|null/.test(targetUrl)) {
@@ -241,7 +280,7 @@ exports.handler = async (event) => {
           targetUrl = `https://${baseKey}.com/search?query=${encodeURIComponent(templateData.destination || templateData.slug || country)}`;
         }
 
-        // Wrap with tp.media when available (and not lonelyplanet)
+        // Wrap with tp.media for partners that have it (except Lonely Planet)
         const partnerConf = pCfg || {};
         const deep_link = (partnerConf.baseUrl && partnerConf.campaign_id && partnerConf.partner_id && baseKey !== "lonelyplanet")
           ? buildTpLink({
@@ -265,12 +304,14 @@ exports.handler = async (event) => {
           mapping_applied: !!mapping,
           raw_target: targetUrl,
         });
-      }
-    }
+      } // end variant loop
+    } // end partners loop
 
     await logToSupabase("info", "Built partner dataset", { total: allPartnersData.length, templateMisses });
 
-    // Upsert affiliates -> get affiliate ids
+    // -----------------------
+    // Upsert affiliates -> build map (partner_code -> affiliate_id)
+    // -----------------------
     const affiliateIdMap = {};
     for (const p of allPartnersData) {
       const code = p.partner_code;
@@ -290,7 +331,7 @@ exports.handler = async (event) => {
           ).select().single();
 
           if (upsertErr) {
-            await logToSupabase("warn", "Affiliate upsert error", { partner_code: code, error: upsertErr.message });
+            await logToSupabase("warn", "Affiliate upsert error (non-blocking)", { partner_code: code, error: upsertErr.message });
             const { data: existingAff, error: fetchErr } = await supabase.from("affiliates").select("affiliate_id").eq("partner_code", code).maybeSingle();
             if (fetchErr) {
               await logToSupabase("error", "Failed to fetch affiliate after upsert", { partner_code: code, error: fetchErr.message });
@@ -309,7 +350,9 @@ exports.handler = async (event) => {
       }
     }
 
+    // -----------------------
     // Build linksToInsert and dedupe (include variant)
+    // -----------------------
     const seen = new Set();
     const linksToInsert = [];
 
@@ -338,23 +381,28 @@ exports.handler = async (event) => {
       return { statusCode: 200, body: JSON.stringify({ status: "ok", message: `No affiliate links prepared for ${name}`, partners_prepared: allPartnersData.length }) };
     }
 
-    // Upsert partner_affiliate_links in small batches
+    // -----------------------
+    // Upsert partner_affiliate_links in small batches (avoid ON CONFLICT multi-affect issues)
+    // Note: we include variant in onConflict to avoid "ON CONFLICT DO UPDATE command cannot affect row a second time"
+    // -----------------------
     const batchSize = 50;
     for (let i = 0; i < linksToInsert.length; i += batchSize) {
       const batch = linksToInsert.slice(i, i + batchSize);
       const { error: uErr } = await supabase.from("partner_affiliate_links").upsert(batch, { onConflict: ["destination_slug", "affiliate_id", "variant"] });
       if (uErr) {
+        // Log and throw to surface to caller
         await logToSupabase("error", "partner_affiliate_links upsert failed (batch)", { error: uErr.message, batchIndex: i / batchSize });
         throw uErr;
       }
     }
-
     await logToSupabase("info", "partner_affiliate_links upserted", { count: linksToInsert.length });
 
+    // -----------------------
     // Insert into specialized tables idempotently
+    // -----------------------
     const insertedCounts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
 
-    // helper: exists check
+    // helper
     async function existsInTable(table, affiliate_id, deep_link) {
       try {
         const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
@@ -377,7 +425,7 @@ exports.handler = async (event) => {
         const baseCode = link.partner_code.split("_")[0];
 
         // Flights detection
-        const isFlight = variant.includes("flight") || ["cheapoair","expedia"].includes(baseCode) && variant.includes("flights");
+        const isFlight = variant.includes("flight") || (["cheapoair","expedia"].includes(baseCode) && variant.includes("flights"));
         if (isFlight) {
           if (!(await existsInTable("flights", affiliate_id, deep_link))) {
             const payload = {

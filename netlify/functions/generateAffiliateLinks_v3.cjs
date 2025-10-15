@@ -661,25 +661,45 @@ exports.handler = async (event) => {
     }
 
     // -----------------------
-    // Upsert partner_affiliate_links in batches with onConflict including variant
-    // -----------------------
-    const batchSize = 50;
-    for (let i = 0; i < linksToInsert.length; i += batchSize) {
-      const batch = linksToInsert.slice(i, i + batchSize);
-      const { error: upErr } = await supabase
-        .from("partner_affiliate_links")
-        .upsert(batch, { onConflict: ["destination_slug", "affiliate_id", "variant"] });
+// Upsert partner_affiliate_links in batches with generation tracking
+// -----------------------
+const batchSize = 50;
+for (let i = 0; i < linksToInsert.length; i += batchSize) {
+  // attach generation metadata to each record in the batch
+  const batch = linksToInsert.slice(i, i + batchSize).map(link => ({
+    ...link,
+    generation_id: generationId,
+    generated_by: "generateAffiliateLinks_v3"
+  }));
 
-      if (upErr) {
-        await logToSupabase("error", "partner_affiliate_links upsert batch failed", { error: upErr.message, batchIndex: i / batchSize, sample: batch.slice(0, 5) });
-        return { statusCode: 500, body: JSON.stringify({ error: upErr.message }) };
-      }
-    }
-    await logToSupabase("info", "partner_affiliate_links upserted", { count: linksToInsert.length });
+  const { error: upErr } = await supabase
+    .from("partner_affiliate_links")
+    .upsert(batch, {
+      onConflict: ["destination_slug", "affiliate_id", "variant"]
+    });
 
-    // -----------------------
-    // Specialized inserts (flights/hotels/guides/activities)
-    // -----------------------
+  if (upErr) {
+    await logToSupabase("error", "partner_affiliate_links upsert batch failed", {
+      error: upErr.message,
+      batchIndex: i / batchSize,
+      sample: batch.slice(0, 5)
+    });
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: upErr.message })
+    };
+  }
+}
+
+await logToSupabase("info", "partner_affiliate_links upserted", {
+  count: linksToInsert.length,
+  generation_id: generationId
+});
+
+// -----------------------
+// Specialized inserts (flights/hotels/guides/activities)
+// -----------------------
+
     async function existsInTable(table, affiliate_id, deep_link) {
       try {
         const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();

@@ -539,6 +539,17 @@ exports.handler = async (event) => {
     // Specialized table inserts (idempotent)
     // -----------------------
     const counts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
+// [PATCH D] Improved category mapping
+const categoryMap = {
+  flights: ['aviasales','wayaway','cheapoair','expedia_flights'],
+  hotels: ['booking','expedia_hotels','tripadvisor_hotels','hostelworld'],
+  activities: ['gyg','tiqets','wegotrip','gocity','klook','tripadvisor_attractions'],
+  guides: ['lp','elsewhere']
+};
+
+const category = Object.entries(categoryMap).find(([_, list]) =>
+  list.includes(partnerCode)
+)?.[0] || 'activities';
 
     async function existsInTable(table, affiliate_id, deep_link) {
       try {

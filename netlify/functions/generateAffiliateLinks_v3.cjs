@@ -20,6 +20,27 @@ const { logToSupabase } = require("./utils/logger.cjs");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
+// ---------------------------------------------------
+// Initialize generation batch metadata
+// ---------------------------------------------------
+const { data: genInsert, error: genErr } = await supabase
+  .from('data_generations')
+  .insert({
+    generated_by: 'generateAffiliateLinks_v3',
+    started_at: new Date(),
+    notes: 'Automated batch run for affiliate deep links'
+  })
+  .select('generation_id')
+  .single();
+
+if (genErr) {
+  console.error('❌ Failed to create generation record:', genErr.message);
+  process.exit(1);
+}
+
+const generationId = genInsert?.generation_id;
+console.log('✅ Generation batch started:', generationId);
+
 // -----------------------------
 // Templates (multi-variant)
 // -----------------------------
@@ -766,7 +787,19 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Specialized inserts finished", counts);
 
-    // Final response
+    // ---------------------------------------------------
+// Finalize generation record
+// ---------------------------------------------------
+await supabase
+  .from('data_generations')
+  .update({
+    finished_at: new Date(),
+    record_count: linksToInsert.length
+  })
+  .eq('generation_id', generationId);
+
+console.log(`✅ Generation ${generationId} finalized successfully.`);
+
     return {
       statusCode: 200,
       body: JSON.stringify({

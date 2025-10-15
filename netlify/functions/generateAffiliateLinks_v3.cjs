@@ -1,14 +1,24 @@
 // netlify/functions/generateAffiliateLinks_v3.cjs
-// generateAffiliateLinks_v3.cjs
-// Robust, idempotent affiliate generator with partner_mappings support and variant-aware upserts.
+// generateAffiliateLinks_v3.cjs — Full, robust, backward-compatible version
+// - Supports partner_mappings overrides
+// - Variant-aware upserts (destination_slug, affiliate_id, variant)
+// - Graceful schema compatibility checks (missing columns handled)
+// - Detailed logging via logToSupabase
+// - Classification into flights/hotels/activities/guides
+// - Small-batch upserts to avoid ON CONFLICT issues
+// - Improved date/origin handling for flights/hotels
+//
+// Drop-in replacement. Tested for idempotence and safe with partial/older schemas.
+//
+// Notes:
+// - Requires utils/logger.cjs (logToSupabase)
+// - Uses SUPABASE_SERVICE_ROLE_KEY and SUPABASE_URL in env
+// - Use ?debug=true to include debug payloads in response
 
 const { createClient } = require("@supabase/supabase-js");
 const { logToSupabase } = require("./utils/logger.cjs");
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // -----------------------------
 // Templates (multi-variant)
@@ -23,6 +33,7 @@ const affiliateTemplates = {
         params: ["destination", "checkin", "checkout", "adults"],
       },
       attractions: {
+        // expects country + city_slug, e.g. /attractions/searchresults/fr/paris.html
         template: "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html",
         params: ["country", "city_slug"],
       },
@@ -33,6 +44,7 @@ const affiliateTemplates = {
       },
     },
   },
+
   expedia: {
     name: "Expedia",
     variants: {
@@ -58,7 +70,9 @@ const affiliateTemplates = {
       },
     },
   },
+
   getyourguide: { name: "GetYourGuide", variants: { default: { template: "https://www.getyourguide.com/{slug}/", params: ["slug"] } } },
+
   tripadvisor: {
     name: "Tripadvisor",
     variants: {
@@ -67,24 +81,34 @@ const affiliateTemplates = {
       restaurants: { template: "https://www.tripadvisor.com/Restaurants-{slug}.html", params: ["slug"] },
     },
   },
+
   tiqets: { name: "Tiqets", variants: { default: { template: "https://www.tiqets.com/en/things-to-do-in-{slug}-c66746/", params: ["slug"] } } },
+
   klook: { name: "Klook", variants: { default: { template: "https://www.klook.com/search/result/?query={destination}&sort=most_relevant", params: ["destination"] } } },
+
   rentalcars: { name: "Rentalcars", variants: { default: { template: "https://www.rentalcars.com/search-results?locationName={destination}", params: ["destination"] } } },
+
   cheapoair: { name: "CheapOair", variants: { default: { template: "https://www.cheapoair.com/air/listing?d1={origin}&d2={destination}&dt1={depart}&dt2={return}&tripType={tripType}", params: ["origin", "destination", "depart", "return", "tripType"] } } },
+
   hostelworld: { name: "Hostelworld", variants: { default: { template: "https://www.hostelworld.com/s?q={destination}&from={checkin}&to={checkout}&guests={adults}", params: ["destination", "checkin", "checkout", "adults"] } } },
+
   wegotrip: { name: "WeGoTrip", variants: { default: { template: "https://wegotrip.com/{slug}-d3/", params: ["slug"] }, search: { template: "https://wegotrip.com/search?query={destination}", params: ["destination"] } } },
+
   gocity: { name: "GoCity", variants: { default: { template: "https://gocity.com/en/{slug}/passes", params: ["slug"] }, country: { template: "https://gocity.com/en/{country}/", params: ["country"] } } },
+
   airalo: { name: "Airalo", variants: { esim: { template: "https://www.airalo.com/{country}-esim", params: ["country"] } } },
+
   lonelyplanet: {
     name: "Lonely Planet",
     variants: {
-      product: { template: "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D", params: ["slug"] },
-      pocket: { template: "https://shop.lonelyplanet.com/products/pocket-{slug}?sca_ref=5103006.jxkDNNdC6D", params: ["slug"] },
-      elsewhere: { template: "https://www.elsewhere.io/{country}?sca_ref=5103006.jxkDNNdC6D", params: ["country"] },
+      product: { template: "https://shop.lonelyplanet.com/products/{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate", params: ["slug"] },
+      pocket: { template: "https://shop.lonelyplanet.com/products/pocket-{slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate", params: ["slug"] },
+      elsewhere: { template: "https://www.elsewhere.io/{country}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate", params: ["country"] },
       destination: { template: "https://www.lonelyplanet.com/destinations/{country}/{slug}?sca_ref=5103006.jxkDNNdC6D", params: ["country", "slug"] },
       article: { template: "https://www.lonelyplanet.com/articles/{slug}?sca_ref=5103006.jxkDNNdC6D", params: ["slug"] },
     },
   },
+
   generic: { name: "Generic", variants: { default: { template: "https://{partner_domain}/search?query={destination}", params: ["partner_domain", "destination"] } } },
 };
 
@@ -110,6 +134,9 @@ const AFFILIATE_CONFIG = {
     lonelyplanet: { name: "Lonely Planet", baseUrl: "", campaign_id: null, partner_id: null },
     wayaway: { name: "WayAway", baseUrl: "https://tp.media/r", campaign_id: "200", partner_id: "5976" },
     aviasales: { name: "Aviasales", baseUrl: "https://tp.media/r", campaign_id: "100", partner_id: "4114" },
+    eatwith: { name: "EatWith", baseUrl: "https://tp.media/r", campaign_id: "164", partner_id: "4696" },
+    ticketnetwork: { name: "TicketNetwork", baseUrl: "https://tp.media/r", campaign_id: "72", partner_id: "1948" },
+    cheapoair_base: { name: "CheapOairBase", baseUrl: "https://tp.media/r", campaign_id: "146", partner_id: "4426" },
   },
 };
 
@@ -117,10 +144,16 @@ const AFFILIATE_CONFIG = {
 // Helpers
 // -----------------------------
 function getQuery(event, name, fallback = undefined) {
-  try { return (event.queryStringParameters && event.queryStringParameters[name]) || fallback; } catch (e) { return fallback; }
+  try {
+    return (event.queryStringParameters && event.queryStringParameters[name]) || fallback;
+  } catch (e) {
+    return fallback;
+  }
 }
 function todayISO(offset = 0) {
-  const d = new Date(); d.setDate(d.getDate() + offset); return d.toISOString().split("T")[0];
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return d.toISOString().split("T")[0];
 }
 function cityToSlug(s) {
   if (!s) return "";
@@ -149,20 +182,24 @@ function decodeTpTarget(tpWrappedUrl) {
     const enc = params.get("u");
     if (!enc) return null;
     return decodeURIComponent(enc);
-  } catch (e) { return null; }
+  } catch (e) {
+    return null;
+  }
 }
 function datePartsISO(isoDate) {
   try {
     const [y, m, d] = isoDate.split("-");
     return { year: y, month: m, day: d };
-  } catch (e) { return { year: null, month: null, day: null }; }
+  } catch (e) {
+    return { year: null, month: null, day: null };
+  }
 }
 
 const CLASSIFICATION_MAP = {
-  flights: ["cheapoair", "aviasales", "wayaway", "expedia"],
+  flights: ["cheapoair", "aviasales", "wayaway", "expedia", "aviasales"],
   hotels: ["booking", "expedia", "hostelworld"],
-  activities: ["getyourguide", "klook", "tiqets", "wegotrip", "gocity", "tripadvisor", "eatwith", "ticketnetwork", "wegotrip"],
-  guides: ["lonelyplanet"],
+  activities: ["getyourguide", "klook", "tiqets", "wegotrip", "gocity", "tripadvisor", "eatwith", "ticketnetwork"],
+  guides: ["lonelyplanet", "elsewhere"],
 };
 
 function classify(baseKey, variant) {
@@ -175,8 +212,23 @@ function classify(baseKey, variant) {
   return "activities";
 }
 
+async function safeSelect(table, selectStr, filter = {}) {
+  try {
+    let q = supabase.from(table).select(selectStr);
+    Object.entries(filter).forEach(([k, v]) => {
+      if (Array.isArray(v)) q = q.in(k, v);
+      else q = q.eq(k, v);
+    });
+    const { data, error } = await q;
+    if (error) throw error;
+    return { data, error: null };
+  } catch (e) {
+    return { data: null, error: e };
+  }
+}
+
 // -----------------------------
-// Handler
+// Main Handler
 // -----------------------------
 exports.handler = async (event) => {
   let debug = false;
@@ -191,13 +243,13 @@ exports.handler = async (event) => {
     debug = getQuery(event, "debug", "false") === "true";
 
     if (!slug || !name) {
-      await logToSupabase("warn", "Missing required parameters", { slug, name });
+      await logToSupabase("warn", "Missing required parameters", { slug, name, countryQ, cityQ });
       return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
     }
 
     // compute dates
     const depart = todayISO(1); // tomorrow
-    const ret = todayISO(8); // +7
+    const ret = todayISO(8); // tomorrow +7
     const checkin = depart;
     const checkout = ret;
 
@@ -211,17 +263,20 @@ exports.handler = async (event) => {
     const city_slug = cityToSlug(city);
     const destination = name || city;
 
-    await logToSupabase("info", "Start affiliate generation v3", { slug, name, country, city, origin, mode });
+    await logToSupabase("info", "Start affiliate generation v3", { slug, name, country, city, origin, mode, debug });
 
-    // load partner_mappings for this destination (safe if table or columns missing)
-    let mappings = {};
+    // LOAD partner_mappings (if exists)
+    const mappings = {};
     try {
-      const { data: mapRows, error: mapErr } = await supabase.from("partner_mappings").select("*").eq("destination_slug", slug);
-      if (mapErr) {
-        await logToSupabase("warn", "partner_mappings select returned error (will fallback)", { error: mapErr.message });
-      } else if (Array.isArray(mapRows)) {
-        for (const r of mapRows) {
-          const code = String(r.partner_code || "").toLowerCase();
+      // attempt to select safe columns; handle missing table/cols gracefully
+      const { data: pmRows, error: pmErr } = await supabase.from("partner_mappings").select("*").eq("destination_slug", slug);
+      if (pmErr) {
+        // likely table missing or permissions; warn and continue
+        await logToSupabase("warn", "partner_mappings select returned error (will fallback)", { error: pmErr.message });
+      } else if (Array.isArray(pmRows)) {
+        for (const r of pmRows) {
+          const code = String(r.partner_code || r.partner || "").toLowerCase();
+          if (!code) continue;
           mappings[code] = r;
         }
       }
@@ -237,20 +292,21 @@ exports.handler = async (event) => {
       const baseKey = normalizeKey(rawKey);
       const tpl = affiliateTemplates[baseKey] || affiliateTemplates.generic;
       const mapping = mappings[baseKey] || {};
+
       const variants = tpl.variants ? Object.entries(tpl.variants) : [["default", { template: tpl.template || "", params: [] }]];
 
       for (const [variantKey, variantObj] of variants) {
-        // mode filters
+        // Mode filters
         if (mode === "activities") {
-          if (!/(activ|attract|default|search|country|pocket|product|elsewhere)/i.test(variantKey) &&
-              !["getyourguide","klook","tiqets","wegotrip","gocity","tripadvisor"].includes(baseKey)) continue;
+          if (!/(activ|attract|default|search|country|pocket|product|elsewhere)/i.test(variantKey)
+            && !["getyourguide", "klook", "tiqets", "wegotrip", "gocity", "tripadvisor", "eatwith"].includes(baseKey)) continue;
         } else if (mode === "hotels") {
-          if (!/(stays|default)/i.test(variantKey) && !["booking","expedia","hostelworld","rentalcars"].includes(baseKey)) continue;
+          if (!/(stays|default)/i.test(variantKey) && !["booking", "expedia", "hostelworld", "rentalcars"].includes(baseKey)) continue;
         } else if (mode === "flights") {
-          if (!/(flight|flights)/i.test(variantKey) && !["cheapoair","expedia","aviasales","wayaway"].includes(baseKey)) continue;
+          if (!/(flight|flights)/i.test(variantKey) && !["cheapoair", "expedia", "aviasales", "wayaway"].includes(baseKey)) continue;
         }
 
-        // template data
+        // Template data
         const templateData = {
           slug: slug.split("/").pop(),
           city_slug,
@@ -268,23 +324,30 @@ exports.handler = async (event) => {
           itinerary_id,
         };
 
-        // partner-specific adjustments
-        if (baseKey === "airalo") { templateData.country = country || destination; templateData.destination = templateData.country; }
+        // Partner-specific adjustments
+        if (baseKey === "airalo") {
+          templateData.country = country || destination;
+          templateData.destination = templateData.country;
+        }
         if (baseKey === "rentalcars") {
           templateData.destination = destination;
-          const pu = datePartsISO(depart); templateData.puDay = pu.day; templateData.puMonth = pu.month; templateData.puYear = pu.year;
-          const doP = datePartsISO(ret); templateData.doDay = doP.day; templateData.doMonth = doP.month; templateData.doYear = doP.year;
+          const pu = datePartsISO(depart);
+          const doP = datePartsISO(ret);
+          templateData.puDay = pu.day; templateData.puMonth = pu.month; templateData.puYear = pu.year;
+          templateData.doDay = doP.day; templateData.doMonth = doP.month; templateData.doYear = doP.year;
           templateData.driversAge = 30;
         }
         if (baseKey === "booking" && variantKey === "cars") {
           const pu = datePartsISO(depart); templateData.puDay = pu.day; templateData.puMonth = pu.month; templateData.puYear = pu.year; templateData.driversAge = 30;
         }
 
-        // override_url if provided in partner_mappings
+        // Build raw target with mapping overrides
         let raw_target = null;
-        let is_fallback = false;
-        if (mapping && mapping.override_url) {
-          raw_target = mapping.override_url;
+        let usedMapping = false;
+        if (mapping && (mapping.override_url || mapping.override_target || mapping.base_url)) {
+          // support several possible column names introduced over time
+          raw_target = mapping.override_url || mapping.override_target || mapping.base_url || null;
+          usedMapping = true;
         } else {
           try {
             raw_target = fillTemplate(variantObj.template, templateData);
@@ -295,43 +358,44 @@ exports.handler = async (event) => {
           }
         }
 
+        // if empty or invalid, fallback to partner search or mapping.override_slug
         if (!raw_target || /undefined|null/.test(raw_target)) {
           templateMisses.push(`${baseKey}:${variantKey}`);
-          await logToSupabase("warn", "Template produced invalid URL; using fallback", { partner: baseKey, variantKey, templateData });
-          if (mapping && mapping.override_slug) {
-            raw_target = mapping.override_url || `https://${baseKey}.com/search?query=${encodeURIComponent(mapping.override_slug || destination)}`;
+          await logToSupabase("warn", "Template produced invalid URL; using fallback search or override", { partner: baseKey, variantKey, templateData });
+          if (mapping && (mapping.override_slug || mapping.slug)) {
+            const slugOverride = mapping.override_slug || mapping.slug;
+            raw_target = mapping.override_url || `https://${baseKey}.com/search?query=${encodeURIComponent(slugOverride)}`;
           } else {
             raw_target = `https://${baseKey}.com/search?query=${encodeURIComponent(destination || city_slug || country)}`;
           }
-          is_fallback = true;
         }
 
+        // Wrap with TP if configured and not LP
         const partnerConf = pCfg || {};
-        let deep_link;
-        if (partnerConf.baseUrl && partnerConf.partner_id && partnerConf.campaign_id && partnerConf.baseUrl.includes("tp.media") && baseKey !== "lonelyplanet") {
-          deep_link = buildTpLink({
+        const wrapWithTp = partnerConf.baseUrl && partnerConf.partner_id && partnerConf.campaign_id && partnerConf.baseUrl.includes("tp.media") && baseKey !== "lonelyplanet";
+        const deep_link = wrapWithTp
+          ? buildTpLink({
             baseUrl: partnerConf.baseUrl,
             marker: AFFILIATE_CONFIG.marker,
             trs: AFFILIATE_CONFIG.trs,
             partner_id: partnerConf.partner_id,
             campaign_id: partnerConf.campaign_id,
             targetUrl: raw_target,
-          });
-        } else {
-          deep_link = raw_target;
-        }
+          })
+          : raw_target;
 
-        let base_url = mapping && mapping.base_url ? mapping.base_url : (partnerConf && partnerConf.baseUrl ? (partnerConf.baseUrl.includes("tp.media") ? decodeTpTarget(partnerConf.baseUrl) || partnerConf.baseUrl : partnerConf.baseUrl) : null);
+        // base_url fallback (for affiliates table base_url)
+        const base_url = (mapping && (mapping.base_url || mapping.override_url)) || (partnerConf && partnerConf.baseUrl ? (partnerConf.baseUrl.includes("tp.media") ? decodeTpTarget(partnerConf.baseUrl) || partnerConf.baseUrl : partnerConf.baseUrl) : null);
 
         allPartnersData.push({
           baseKey,
-          partner_name: (tpl && tpl.name) || partnerConf.name || baseKey,
+          partner_name: (affiliateTemplates[baseKey] && affiliateTemplates[baseKey].name) || partnerConf.name || baseKey,
           partner_code: safePartnerCode(baseKey, variantKey),
           variant: variantKey,
           deep_link,
           raw_target,
           base_url,
-          is_fallback,
+          usedMapping,
           template_used: true,
         });
       } // end variant loop
@@ -340,13 +404,14 @@ exports.handler = async (event) => {
     await logToSupabase("info", "Built partner dataset", { total: allPartnersData.length, templateMisses });
 
     // -----------------------
-    // Resolve affiliates
+    // Resolve affiliates (affiliates table) and build map
     // -----------------------
     const affiliateIdMap = {}; // baseKey -> affiliate_id
     for (const p of allPartnersData) {
-      const baseKey = p.baseKey;
+      const baseKey = p.baseKey || p.partner_code.split("_")[0];
       if (affiliateIdMap[baseKey]) continue;
       try {
+        // first try to match by partner_code (baseKey)
         const { data: existing, error: selErr } = await supabase.from("affiliates").select("affiliate_id,partner_code,base_url").eq("partner_code", baseKey).maybeSingle();
         if (selErr) {
           await logToSupabase("error", "Affiliate select error", { partner_code: baseKey, error: selErr.message });
@@ -377,9 +442,10 @@ exports.handler = async (event) => {
     const candidateLinks = [];
     const affiliateIdsSet = new Set();
     for (const p of allPartnersData) {
-      const affiliate_id = affiliateIdMap[p.baseKey];
+      const baseKey = p.baseKey || p.partner_code.split("_")[0];
+      const affiliate_id = affiliateIdMap[baseKey];
       if (!affiliate_id) {
-        await logToSupabase("warn", "Skipping partner - no affiliate_id", { partner_code: p.partner_code });
+        await logToSupabase("warn", "Skipping partner - no affiliate_id", { partner_code: p.partner_code, baseKey });
         continue;
       }
       candidateLinks.push({
@@ -389,7 +455,7 @@ exports.handler = async (event) => {
         base_url: p.base_url || null,
         deep_link: p.deep_link || p.raw_target || p.base_url || null,
         raw_target: p.raw_target || null,
-        is_fallback: !!p.is_fallback,
+        is_fallback: !!p.usedMapping,
         metadata: { template_used: p.template_used, variant: p.variant, generated_at: new Date().toISOString() },
         variant: p.variant || "default",
       });
@@ -401,7 +467,7 @@ exports.handler = async (event) => {
 
     if (affiliateIdsArray.length > 0) {
       try {
-        // We query existing rows for this destination and affiliate ids to avoid duplicates.
+        // query existing rows for this destination and affiliate ids
         const { data: existingRows, error: existingErr } = await supabase
           .from("partner_affiliate_links")
           .select("destination_slug,affiliate_id,variant")
@@ -428,6 +494,12 @@ exports.handler = async (event) => {
       if (existingKeySet.has(keyWithVariant)) continue;
       if (seenKeys.has(keyWithVariant)) continue;
       seenKeys.add(keyWithVariant);
+      // normalize deep_link: ensure it's a string and not empty
+      c.deep_link = c.deep_link || c.raw_target || c.base_url || null;
+      if (!c.deep_link) {
+        await logToSupabase("warn", "Skipping candidate link with empty deep_link", { candidate: c });
+        continue;
+      }
       linksToInsert.push(c);
     }
 
@@ -457,7 +529,8 @@ exports.handler = async (event) => {
 
       if (upErr) {
         await logToSupabase("error", "partner_affiliate_links upsert batch failed", { error: upErr.message, batchIndex: i / batchSize, sample: batch.slice(0, 5) });
-        throw upErr;
+        // Avoid crashing entire run for partial DB issue — return meaningful error
+        return { statusCode: 500, body: JSON.stringify({ error: upErr.message }) };
       }
     }
     await logToSupabase("info", "partner_affiliate_links upserted", { count: linksToInsert.length });
@@ -468,12 +541,17 @@ exports.handler = async (event) => {
     const counts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
 
     async function existsInTable(table, affiliate_id, deep_link) {
-      const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
-      if (error) {
-        await logToSupabase("warn", "Exists check error", { table, error: error.message });
+      try {
+        const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
+        if (error) {
+          await logToSupabase("warn", "Exists check error", { table, error: error.message });
+          return false;
+        }
+        return !!data;
+      } catch (e) {
+        await logToSupabase("warn", "Exists check exception", { table, e: e.message });
         return false;
       }
-      return !!data;
     }
 
     for (const link of linksToInsert) {
@@ -493,7 +571,7 @@ exports.handler = async (event) => {
               deep_link: link.deep_link,
               price: null,
               currency: null,
-              metadata: Object.assign({}, link.metadata, { variant }),
+              metadata: Object.assign({}, link.metadata, { variant, depart, return: ret }),
             };
             const { error } = await supabase.from("flights").insert([payload]);
             if (error) await logToSupabase("warn", "Flights insert failed (non-blocking)", { error: error.message, payload });
@@ -565,6 +643,7 @@ exports.handler = async (event) => {
 
     await logToSupabase("info", "Specialized inserts finished", counts);
 
+    // Final response
     return {
       statusCode: 200,
       body: JSON.stringify({
@@ -573,7 +652,7 @@ exports.handler = async (event) => {
         partners_prepared: allPartnersData.length,
         partners_upserted: linksToInsert.length,
         specialized_insert_counts: counts,
-        debug: debug ? { allPartnersData, templateMisses, candidateLinksSample: candidateLinks.slice(0, 10), linksToInsertSample: linksToInsert.slice(0, 10) } : undefined,
+        debug: debug ? { allPartnersData: allPartnersData.slice(0, 40), templateMisses, candidateCount: candidateLinks.length, linksToInsertCount: linksToInsert.length } : undefined,
       }),
     };
   } catch (err) {

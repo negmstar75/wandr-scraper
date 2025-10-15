@@ -1,5 +1,5 @@
 // netlify/functions/generateAffiliateLinks_v3.cjs
-// generateAffiliateLinks_v3.cjs — Full, robust, backward-compatible version
+// generateAffiliateLinks_v3.cjs — Full, robust, backward-compatible version (patched v3.1)
 // - Supports partner_mappings overrides
 // - Variant-aware upserts (destination_slug, affiliate_id, variant)
 // - Graceful schema compatibility checks (missing columns handled)
@@ -137,6 +137,7 @@ const AFFILIATE_CONFIG = {
     eatwith: { name: "EatWith", baseUrl: "https://tp.media/r", campaign_id: "164", partner_id: "4696" },
     ticketnetwork: { name: "TicketNetwork", baseUrl: "https://tp.media/r", campaign_id: "72", partner_id: "1948" },
     cheapoair_base: { name: "CheapOairBase", baseUrl: "https://tp.media/r", campaign_id: "146", partner_id: "4426" },
+    // Note: other base-url-only partners may exist in AFFILIATE_CONFIG.partners
   },
 };
 
@@ -150,6 +151,7 @@ function getQuery(event, name, fallback = undefined) {
     return fallback;
   }
 }
+function pad(n){ return n < 10 ? `0${n}` : String(n); }
 function todayISO(offset = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offset);
@@ -168,11 +170,19 @@ function safePartnerCode(baseKey, variantKey) {
 }
 function fillTemplate(template, data) {
   if (!template) return "";
-  return template.replace(/\{(.*?)\}/g, (_, key) => encodeURIComponent(data[key] ?? ""));
+  // Replace placeholders without double-encoding already encoded parts:
+  return template.replace(/\{(.*?)\}/g, (_, key) => {
+    const val = data[key];
+    if (val === undefined || val === null) return "";
+    // if value already looks encoded (contains %), assume it's intentionally encoded — still encode fallback
+    return encodeURIComponent(String(val));
+  });
 }
 function buildTpLink({ baseUrl, marker, trs, partner_id, campaign_id, targetUrl }) {
   if (!baseUrl) return targetUrl || "";
   if (!targetUrl) return baseUrl;
+  // Avoid double-wrapping: if targetUrl already points to tp.media, don't wrap it again
+  if (targetUrl.includes("tp.media")) return targetUrl;
   return `${baseUrl}?marker=${marker}&trs=${trs}&p=${partner_id}&u=${encodeURIComponent(targetUrl)}&campaign_id=${campaign_id}`;
 }
 function decodeTpTarget(tpWrappedUrl) {
@@ -189,10 +199,72 @@ function decodeTpTarget(tpWrappedUrl) {
 function datePartsISO(isoDate) {
   try {
     const [y, m, d] = isoDate.split("-");
-    return { year: y, month: m, day: d };
+    return { year: String(y), month: pad(Number(m)), day: pad(Number(d)) };
   } catch (e) {
     return { year: null, month: null, day: null };
   }
+}
+
+/**
+ * buildRentalDates(now = new Date())
+ * Returns { pickupDate, pickupTime, dropoffDate, dropoffTime, puDay, puMonth, puYear, doDay, doMonth, doYear }
+ * pickup = tomorrow at 10:00, dropoff = pickup + 1 day at 10:00
+ */
+function buildRentalDates(now = new Date()) {
+  const pickup = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 10, 0, 0, 0);
+  const dropoff = new Date(pickup.getFullYear(), pickup.getMonth(), pickup.getDate() + 1, 10, 0, 0, 0);
+  const pickupDate = `${pickup.getFullYear()}-${pad(pickup.getMonth()+1)}-${pad(pickup.getDate())}`;
+  const dropoffDate = `${dropoff.getFullYear()}-${pad(dropoff.getMonth()+1)}-${pad(dropoff.getDate())}`;
+  return {
+    pickupDate,
+    pickupTime: "10:00",
+    dropoffDate,
+    dropoffTime: "10:00",
+    puDay: pad(pickup.getDate()),
+    puMonth: pad(pickup.getMonth()+1),
+    puYear: String(pickup.getFullYear()),
+    doDay: pad(dropoff.getDate()),
+    doMonth: pad(dropoff.getMonth()+1),
+    doYear: String(dropoff.getFullYear()),
+  };
+}
+
+/**
+ * buildBaseUrl(templateUrl, tokens)
+ * Replace placeholders and strip any leftover placeholders.
+ * Ensures result is a fully qualified URL if possible.
+ */
+function buildBaseUrl(templateUrl, tokens = {}) {
+  if (!templateUrl) return "";
+  let url = templateUrl;
+  for (const [k, v] of Object.entries(tokens || {})) {
+    const safe = (v === null || v === undefined) ? "" : String(v);
+    url = url.split(`{${k}}`).join(encodeURIComponent(safe));
+  }
+  url = url.replace(/\{[^\}]+\}/g, "");
+  if (!/^https?:\/\//i.test(url)) {
+    // if it's not a fully qualified url, return as-is so higher-level logic can fallback
+    return url;
+  }
+  return url;
+}
+
+/**
+ * resolveDestinationSlug(partnerCode, destinationSlug, partnerMappings, templates)
+ * Priority:
+ * 1. partnerMappings where active=true and override_slug defined
+ * 2. templates override (if provided)
+ * 3. fallback to original destinationSlug
+ */
+function resolveDestinationSlug(partnerCode, destinationSlug, partnerMappings = {}, templates = {}) {
+  const canonical = String(destinationSlug || "").toLowerCase().trim();
+  const map = partnerMappings[partnerCode];
+  if (map && map.active && (map.override_slug || map.slug)) {
+    return map.override_slug || map.slug;
+  }
+  const tpl = (templates && templates[partnerCode] && templates[partnerCode].override_slug) || null;
+  if (tpl) return tpl;
+  return canonical;
 }
 
 const CLASSIFICATION_MAP = {
@@ -202,13 +274,15 @@ const CLASSIFICATION_MAP = {
   guides: ["lonelyplanet", "elsewhere"],
 };
 
-function classify(baseKey, variant) {
-  variant = String(variant || "").toLowerCase();
-  const b = String(baseKey || "").toLowerCase();
-  if (CLASSIFICATION_MAP.flights.includes(b) || variant.includes("flight")) return "flights";
-  if (CLASSIFICATION_MAP.hotels.includes(b) || variant.includes("stay") || variant.includes("stays") || variant.includes("hotel")) return "hotels";
-  if (CLASSIFICATION_MAP.guides.includes(b) || variant.includes("product") || variant.includes("pocket") || variant.includes("article") || variant.includes("elsewhere")) return "guides";
-  if (CLASSIFICATION_MAP.activities.includes(b) || variant.includes("activity") || variant.includes("attract") || variant.includes("pass") || variant.includes("things")) return "activities";
+function mapCategory(partnerCode, variant, templateMeta = {}) {
+  // 1. explicit template meta
+  if (templateMeta && templateMeta.category) return templateMeta.category;
+  // 2. forced by partner
+  const b = String(partnerCode || "").toLowerCase();
+  if (CLASSIFICATION_MAP.flights.includes(b) || (variant && variant.includes("flight"))) return "flights";
+  if (CLASSIFICATION_MAP.hotels.includes(b) || (variant && (variant.includes("stay") || variant.includes("hotel")))) return "hotels";
+  if (CLASSIFICATION_MAP.guides.includes(b) || (variant && (variant.includes("product") || variant.includes("article") || variant.includes("elsewhere")))) return "guides";
+  if (CLASSIFICATION_MAP.activities.includes(b) || (variant && (variant.includes("activity") || variant.includes("attract") || variant.includes("things") || variant.includes("pass")))) return "activities";
   return "activities";
 }
 
@@ -226,6 +300,30 @@ async function safeSelect(table, selectStr, filter = {}) {
     return { data: null, error: e };
   }
 }
+
+// -----------------------------
+// Which partners have deep links provided (only these use templates)
+// From your last entries: deep-linked partners explicitly provided by you
+const DEEP_LINK_PARTNERS = new Set([
+  "booking",
+  "expedia",
+  "getyourguide",
+  "tripadvisor",
+  "klook",
+  "tiqets",
+  "rentalcars",
+  "cheapoair",
+  "gocity",
+  "wayaway",
+  "wegotrip",
+  "aviasales",
+  "getrentacar",
+  "eatwith",
+  "12go",
+  "wegotrip",
+  "ticketnetwork"
+]);
+// -----------------------------
 
 // -----------------------------
 // Main Handler
@@ -247,7 +345,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
     }
 
-    // compute dates
+    // compute dates (tomorrow + 7)
     const depart = todayISO(1); // tomorrow
     const ret = todayISO(8); // tomorrow +7
     const checkin = depart;
@@ -256,7 +354,7 @@ exports.handler = async (event) => {
     if (!origin || String(origin).trim() === "") origin = "LAX";
 
     // country / city
-    let country = (countryQ && countryQ.trim()) || slug.split("/")[0] || "us";
+    let country = (countryQ && countryQ.trim()) || (slug.split("/")[0]) || "us";
     country = String(country).toLowerCase();
     const country_code = country.slice(0, 2);
     const city = cityQ || name;
@@ -268,10 +366,8 @@ exports.handler = async (event) => {
     // LOAD partner_mappings (if exists)
     const mappings = {};
     try {
-      // attempt to select safe columns; handle missing table/cols gracefully
       const { data: pmRows, error: pmErr } = await supabase.from("partner_mappings").select("*").eq("destination_slug", slug);
       if (pmErr) {
-        // likely table missing or permissions; warn and continue
         await logToSupabase("warn", "partner_mappings select returned error (will fallback)", { error: pmErr.message });
       } else if (Array.isArray(pmRows)) {
         for (const r of pmRows) {
@@ -324,56 +420,77 @@ exports.handler = async (event) => {
           itinerary_id,
         };
 
-        // Partner-specific adjustments
+        // Rental/cars specific computed values
+        if (baseKey === "rentalcars" || (baseKey === "booking" && variantKey === "cars")) {
+          const rental = buildRentalDates(new Date());
+          templateData.puDay = rental.puDay;
+          templateData.puMonth = rental.puMonth;
+          templateData.puYear = rental.puYear;
+          templateData.doDay = rental.doDay;
+          templateData.doMonth = rental.doMonth;
+          templateData.doYear = rental.doYear;
+          templateData.puHour = "10";
+          templateData.doHour = "10";
+          templateData.driversAge = 30;
+          // also include pickup/dropoff ISO forms for templates that accept them
+          templateData.pickupDate = rental.pickupDate;
+          templateData.dropoffDate = rental.dropoffDate;
+        }
+
         if (baseKey === "airalo") {
           templateData.country = country || destination;
           templateData.destination = templateData.country;
         }
-        if (baseKey === "rentalcars") {
-          templateData.destination = destination;
-          const pu = datePartsISO(depart);
-          const doP = datePartsISO(ret);
-          templateData.puDay = pu.day; templateData.puMonth = pu.month; templateData.puYear = pu.year;
-          templateData.doDay = doP.day; templateData.doMonth = doP.month; templateData.doYear = doP.year;
-          templateData.driversAge = 30;
-        }
-        if (baseKey === "booking" && variantKey === "cars") {
-          const pu = datePartsISO(depart); templateData.puDay = pu.day; templateData.puMonth = pu.month; templateData.puYear = pu.year; templateData.driversAge = 30;
-        }
 
-        // Build raw target with mapping overrides
+        // Build raw target:
         let raw_target = null;
         let usedMapping = false;
-        if (mapping && (mapping.override_url || mapping.override_target || mapping.base_url)) {
-          // support several possible column names introduced over time
-          raw_target = mapping.override_url || mapping.override_target || mapping.base_url || null;
-          usedMapping = true;
-        } else {
-          try {
-            raw_target = fillTemplate(variantObj.template, templateData);
-          } catch (e) {
-            templateMisses.push(`${baseKey}:${variantKey}`);
-            await logToSupabase("warn", "Template fill failure", { partner: baseKey, variantKey, err: e.message });
-            raw_target = "";
-          }
-        }
 
-        // if empty or invalid, fallback to partner search or mapping.override_slug
-        if (!raw_target || /undefined|null/.test(raw_target)) {
-          templateMisses.push(`${baseKey}:${variantKey}`);
-          await logToSupabase("warn", "Template produced invalid URL; using fallback search or override", { partner: baseKey, variantKey, templateData });
-          if (mapping && (mapping.override_slug || mapping.slug)) {
-            const slugOverride = mapping.override_slug || mapping.slug;
-            raw_target = mapping.override_url || `https://${baseKey}.com/search?query=${encodeURIComponent(slugOverride)}`;
+        // If this partner is in the DEEP_LINK_PARTNERS set, attempt to build a deep link via template or mapping override.
+        if (DEEP_LINK_PARTNERS.has(baseKey)) {
+
+          if (mapping && (mapping.override_url || mapping.override_target || mapping.base_url)) {
+            raw_target = mapping.override_url || mapping.override_target || mapping.base_url || null;
+            usedMapping = true;
+          } else {
+            try {
+              raw_target = fillTemplate(variantObj.template, templateData);
+            } catch (e) {
+              templateMisses.push(`${baseKey}:${variantKey}`);
+              await logToSupabase("warn", "Template fill failure", { partner: baseKey, variantKey, err: e.message });
+              raw_target = "";
+            }
+          }
+
+          // If template produced an empty or invalid URL, fallback to mapping override or partner base
+          if (!raw_target || /undefined|null/.test(raw_target)) {
+            templateMisses.push(`${baseKey}:${variantKey}`);
+            await logToSupabase("warn", "Template produced invalid URL; using fallback search or override", { partner: baseKey, variantKey, templateData });
+            if (mapping && (mapping.override_slug || mapping.slug)) {
+              const slugOverride = mapping.override_slug || mapping.slug;
+              raw_target = mapping.override_url || `https://${baseKey}.com/search?query=${encodeURIComponent(slugOverride)}`;
+            } else {
+              raw_target = `https://${baseKey}.com/search?query=${encodeURIComponent(destination || city_slug || country)}`;
+            }
+          }
+
+        } else {
+          // Partners not in deep-links set: use partner baseUrl (tp.media wrapper) or partner homepage if baseUrl missing
+          const partnerConf = pCfg || {};
+          if (partnerConf && partnerConf.baseUrl) {
+            // use the TP wrapper base url as deep link (so end result is consistent)
+            // If baseUrl is a tp.media wrapper with target encoded, keep it. Do not attempt to add a second wrapper.
+            raw_target = partnerConf.baseUrl;
           } else {
             raw_target = `https://${baseKey}.com/search?query=${encodeURIComponent(destination || city_slug || country)}`;
           }
         }
 
-        // Wrap with TP if configured and not LP
+        // Build final deep link (wrap with TP only if target isn't already tp.media and partnerConf indicates wrapper)
         const partnerConf = pCfg || {};
-        const wrapWithTp = partnerConf.baseUrl && partnerConf.partner_id && partnerConf.campaign_id && partnerConf.baseUrl.includes("tp.media") && baseKey !== "lonelyplanet";
-        const deep_link = wrapWithTp
+        const wrapWithTp = !!(partnerConf.baseUrl && partnerConf.partner_id && partnerConf.campaign_id && partnerConf.baseUrl.includes("tp.media") && baseKey !== "lonelyplanet");
+
+        const deep_link = (wrapWithTp && raw_target && !raw_target.includes("tp.media"))
           ? buildTpLink({
             baseUrl: partnerConf.baseUrl,
             marker: AFFILIATE_CONFIG.marker,
@@ -384,8 +501,13 @@ exports.handler = async (event) => {
           })
           : raw_target;
 
-        // base_url fallback (for affiliates table base_url)
-        const base_url = (mapping && (mapping.base_url || mapping.override_url)) || (partnerConf && partnerConf.baseUrl ? (partnerConf.baseUrl.includes("tp.media") ? decodeTpTarget(partnerConf.baseUrl) || partnerConf.baseUrl : partnerConf.baseUrl) : null);
+        // Decide base_url to store: prefer mapping/base_url override, otherwise if deep_link is TP wrapper use deep_link,
+        // otherwise use partnerConf.baseUrl if present, else raw_target
+        let base_url = null;
+        if (mapping && (mapping.base_url || mapping.override_url)) base_url = mapping.base_url || mapping.override_url;
+        else if (deep_link && deep_link.includes("tp.media")) base_url = deep_link;
+        else if (partnerConf && partnerConf.baseUrl) base_url = partnerConf.baseUrl;
+        else base_url = raw_target;
 
         allPartnersData.push({
           baseKey,
@@ -396,7 +518,7 @@ exports.handler = async (event) => {
           raw_target,
           base_url,
           usedMapping,
-          template_used: true,
+          template_used: DEEP_LINK_PARTNERS.has(baseKey),
         });
       } // end variant loop
     } // end partners loop
@@ -411,7 +533,6 @@ exports.handler = async (event) => {
       const baseKey = p.baseKey || p.partner_code.split("_")[0];
       if (affiliateIdMap[baseKey]) continue;
       try {
-        // first try to match by partner_code (baseKey)
         const { data: existing, error: selErr } = await supabase.from("affiliates").select("affiliate_id,partner_code,base_url").eq("partner_code", baseKey).maybeSingle();
         if (selErr) {
           await logToSupabase("error", "Affiliate select error", { partner_code: baseKey, error: selErr.message });
@@ -458,6 +579,8 @@ exports.handler = async (event) => {
         is_fallback: !!p.usedMapping,
         metadata: { template_used: p.template_used, variant: p.variant, generated_at: new Date().toISOString() },
         variant: p.variant || "default",
+        generated_by: "generateAffiliateLinks_v3.1",
+        generation_id: null, // optionally set a UUID externally if desired
       });
       affiliateIdsSet.add(affiliate_id);
     }
@@ -467,10 +590,9 @@ exports.handler = async (event) => {
 
     if (affiliateIdsArray.length > 0) {
       try {
-        // query existing rows for this destination and affiliate ids
         const { data: existingRows, error: existingErr } = await supabase
           .from("partner_affiliate_links")
-          .select("destination_slug,affiliate_id,variant")
+          .select("destination_slug,affiliate_id,variant,partner_code")
           .eq("destination_slug", slug)
           .in("affiliate_id", affiliateIdsArray);
 
@@ -529,16 +651,14 @@ exports.handler = async (event) => {
 
       if (upErr) {
         await logToSupabase("error", "partner_affiliate_links upsert batch failed", { error: upErr.message, batchIndex: i / batchSize, sample: batch.slice(0, 5) });
-        // Avoid crashing entire run for partial DB issue — return meaningful error
         return { statusCode: 500, body: JSON.stringify({ error: upErr.message }) };
       }
     }
     await logToSupabase("info", "partner_affiliate_links upserted", { count: linksToInsert.length });
 
-const category = Object.entries(categoryMap).find(([_, list]) =>
-  list.includes(partnerCode)
-)?.[0] || 'activities';
-
+    // -----------------------
+    // Specialized inserts (flights/hotels/guides/activities)
+    // -----------------------
     async function existsInTable(table, affiliate_id, deep_link) {
       try {
         const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
@@ -553,11 +673,13 @@ const category = Object.entries(categoryMap).find(([_, list]) =>
       }
     }
 
+    const counts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
+
     for (const link of linksToInsert) {
       try {
         const baseCode = (link.partner_code || "").split("_")[0];
         const variant = (link.variant || "").toLowerCase();
-        const classification = classify(baseCode, variant);
+        const classification = mapCategory(baseCode, variant);
 
         if (classification === "flights") {
           if (!(await existsInTable("flights", link.affiliate_id, link.deep_link))) {
@@ -584,9 +706,11 @@ const category = Object.entries(categoryMap).find(([_, list]) =>
             const payload = {
               affiliate_id: link.affiliate_id,
               destination_slug: slug,
-              name: null,
-              stars: null,
-              address: null,
+              partner_name: null,
+              checkin,
+              checkout,
+              adults: 2,
+              children: 0,
               deep_link: link.deep_link,
               price: null,
               currency: null,
@@ -604,7 +728,7 @@ const category = Object.entries(categoryMap).find(([_, list]) =>
             const payload = {
               affiliate_id: link.affiliate_id,
               title: name,
-              slug: slug.split("/").pop(),
+              destination_slug: slug,
               category: variant || "guide",
               deep_link: link.deep_link,
               language: "en",

@@ -19,37 +19,43 @@ const { createClient } = require("@supabase/supabase-js");
 const { logToSupabase } = require("./utils/logger.cjs");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-// -----------------------
-// Create new data generation batch
-// -----------------------
-let generationId = null;
 
-try {
-  const { data: genRow, error: genErr } = await supabase
-    .from("data_generations")
-    .insert([
-      {
-        generated_by: "generateAffiliateLinks_v3.cjs",
-        notes: "Auto batch started before affiliate link generation",
-        started_at: new Date()
-      }
-    ])
-    .select("id")
-    .single();
+// ---------------------------------------------------
+// Main Netlify handler
+// ---------------------------------------------------
+exports.handler = async (event, context) => {
+  // -----------------------
+  // Create new data generation batch
+  // -----------------------
+  let generationId = null;
+  try {
+    const { data: genRow, error: genErr } = await supabase
+      .from("data_generations")
+      .insert([
+        {
+          generated_by: "generateAffiliateLinks_v3.cjs",
+          notes: "Auto batch started before affiliate link generation",
+          started_at: new Date(),
+        },
+      ])
+      .select("id")
+      .single();
 
-  if (genErr) {
-    console.error("⚠️ Failed to create generation batch:", genErr.message);
-  } else {
-    generationId = genRow.id;
-    console.log(`🧩 Created new data generation batch: ${generationId}`);
+    if (genErr) {
+      console.error("⚠️ Failed to create generation batch:", genErr.message);
+    } else {
+      generationId = genRow.id;
+      console.log(`🧩 Created new data generation batch: ${generationId}`);
+    }
+  } catch (err) {
+    console.error("⚠️ Error during generation batch insert:", err.message);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Failed to initialize data generation batch" }),
+    };
   }
-} catch (err) {
-  console.error("⚠️ Error during generation batch insert:", err.message);
-  process.exit(1);
-}
 
-// ✅ Generation batch successfully initialized
-console.log("✅ Generation batch started:", generationId);
+  console.log("✅ Generation batch started:", generationId);
 
 // -----------------------------
 // Templates (multi-variant)

@@ -19,6 +19,32 @@ const { createClient } = require("@supabase/supabase-js");
 const { logToSupabase } = require("./utils/logger.cjs");
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+// -----------------------
+// Create new data generation batch
+// -----------------------
+let generationId = null;
+try {
+  const { data: genRow, error: genErr } = await supabase
+    .from("data_generations")
+    .insert([
+      {
+        generated_by: "generateAffiliateLinks_v3.cjs",
+        notes: "Auto batch started before affiliate link generation"
+      }
+    ])
+    .select("id")
+    .single();
+
+  if (genErr) {
+    console.error("⚠️ Failed to create generation batch:", genErr.message);
+  } else {
+    generationId = genRow.id;
+    console.log(`🧩 Created new data generation batch: ${generationId}`);
+  }
+} catch (err) {
+  console.error("⚠️ Error during generation batch insert:", err.message);
+}
+
 
 // ---------------------------------------------------
 // Initialize generation batch metadata
@@ -700,116 +726,150 @@ await logToSupabase("info", "partner_affiliate_links upserted", {
 // Specialized inserts (flights/hotels/guides/activities)
 // -----------------------
 
-    async function existsInTable(table, affiliate_id, deep_link) {
-      try {
-        const { data, error } = await supabase.from(table).select("id").eq("affiliate_id", affiliate_id).eq("deep_link", deep_link).limit(1).maybeSingle();
-        if (error) {
-          await logToSupabase("warn", "Exists check error", { table, error: error.message });
-          return false;
-        }
-        return !!data;
-      } catch (e) {
-        await logToSupabase("warn", "Exists check exception", { table, e: e.message });
-        return false;
+async function existsInTable(table, affiliate_id, deep_link) {
+  try {
+    const { data, error } = await supabase
+      .from(table)
+      .select("id")
+      .eq("affiliate_id", affiliate_id)
+      .eq("deep_link", deep_link)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      await logToSupabase("warn", "Exists check error", { table, error: error.message });
+      return false;
+    }
+    return !!data;
+  } catch (e) {
+    await logToSupabase("warn", "Exists check exception", { table, e: e.message });
+    return false;
+  }
+}
+
+// Inject generation tracking metadata helper
+const injectGenerationMeta = (payload) => ({
+  ...payload,
+  generation_id: generationId || null,
+  generated_by: "generateAffiliateLinks_v3"
+});
+
+const counts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
+
+for (const link of linksToInsert) {
+  try {
+    const baseCode = (link.partner_code || "").split("_")[0];
+    const variant = (link.variant || "").toLowerCase();
+    const classification = mapCategory(baseCode, variant);
+
+    if (classification === "flights") {
+      if (!(await existsInTable("flights", link.affiliate_id, link.deep_link))) {
+        const payload = injectGenerationMeta({
+          affiliate_id: link.affiliate_id,
+          destination_slug: slug,
+          origin,
+          airline: null,
+          flight_code: null,
+          deep_link: link.deep_link,
+          price: null,
+          currency: null,
+          metadata: Object.assign({}, link.metadata, { variant, depart, return: ret })
+        });
+        const { error } = await supabase.from("flights").insert([payload]);
+        if (error)
+          await logToSupabase("warn", "Flights insert failed (non-blocking)", {
+            error: error.message,
+            payload
+          });
+        else counts.flights++;
       }
+      continue;
     }
 
-    const counts = { flights: 0, hotels: 0, activities: 0, guides: 0 };
-
-    for (const link of linksToInsert) {
-      try {
-        const baseCode = (link.partner_code || "").split("_")[0];
-        const variant = (link.variant || "").toLowerCase();
-        const classification = mapCategory(baseCode, variant);
-
-        if (classification === "flights") {
-          if (!(await existsInTable("flights", link.affiliate_id, link.deep_link))) {
-            const payload = {
-              affiliate_id: link.affiliate_id,
-              destination_slug: slug,
-              origin,
-              airline: null,
-              flight_code: null,
-              deep_link: link.deep_link,
-              price: null,
-              currency: null,
-              metadata: Object.assign({}, link.metadata, { variant, depart, return: ret }),
-            };
-            const { error } = await supabase.from("flights").insert([payload]);
-            if (error) await logToSupabase("warn", "Flights insert failed (non-blocking)", { error: error.message, payload });
-            else counts.flights++;
-          }
-          continue;
-        }
-
-        if (classification === "hotels") {
-          if (!(await existsInTable("hotels", link.affiliate_id, link.deep_link))) {
-            const payload = {
-              affiliate_id: link.affiliate_id,
-              destination_slug: slug,
-              partner_name: null,
-              checkin,
-              checkout,
-              adults: 2,
-              children: 0,
-              deep_link: link.deep_link,
-              price: null,
-              currency: null,
-              metadata: Object.assign({}, link.metadata, { variant, checkin, checkout }),
-            };
-            const { error } = await supabase.from("hotels").insert([payload]);
-            if (error) await logToSupabase("warn", "Hotels insert failed (non-blocking)", { error: error.message, payload });
-            else counts.hotels++;
-          }
-          continue;
-        }
-
-        if (classification === "guides") {
-          if (!(await existsInTable("guides", link.affiliate_id, link.deep_link))) {
-            const payload = {
-              affiliate_id: link.affiliate_id,
-              title: name,
-              destination_slug: slug,
-              category: variant || "guide",
-              deep_link: link.deep_link,
-              language: "en",
-              metadata: Object.assign({}, link.metadata, { variant }),
-            };
-            const { error } = await supabase.from("guides").insert([payload]);
-            if (error) await logToSupabase("warn", "Guides insert failed (non-blocking)", { error: error.message, payload });
-            else counts.guides++;
-          }
-          continue;
-        }
-
-        // Activities fallback
-        if (!(await existsInTable("activities", link.affiliate_id, link.deep_link))) {
-          const payload = {
-            affiliate_id: link.affiliate_id,
-            destination_slug: slug,
-            name: name || null,
-            category: "activity",
-            deep_link: link.deep_link,
-            duration: null,
-            price: null,
-            currency: null,
-            rating: null,
-            metadata: Object.assign({}, link.metadata, { variant }),
-          };
-          const { error } = await supabase.from("activities").insert([payload]);
-          if (error) await logToSupabase("warn", "Activities insert failed (non-blocking)", { error: error.message, payload });
-          else counts.activities++;
-        }
-      } catch (e) {
-        await logToSupabase("error", "Specialized insert error", { error: e.message, link });
+    if (classification === "hotels") {
+      if (!(await existsInTable("hotels", link.affiliate_id, link.deep_link))) {
+        const payload = injectGenerationMeta({
+          affiliate_id: link.affiliate_id,
+          destination_slug: slug,
+          partner_name: null,
+          checkin,
+          checkout,
+          adults: 2,
+          children: 0,
+          deep_link: link.deep_link,
+          price: null,
+          currency: null,
+          metadata: Object.assign({}, link.metadata, { variant, checkin, checkout })
+        });
+        const { error } = await supabase.from("hotels").insert([payload]);
+        if (error)
+          await logToSupabase("warn", "Hotels insert failed (non-blocking)", {
+            error: error.message,
+            payload
+          });
+        else counts.hotels++;
       }
+      continue;
     }
 
-    await logToSupabase("info", "Specialized inserts finished", counts);
+    if (classification === "guides") {
+      if (!(await existsInTable("guides", link.affiliate_id, link.deep_link))) {
+        const payload = injectGenerationMeta({
+          affiliate_id: link.affiliate_id,
+          title: name,
+          destination_slug: slug,
+          category: variant || "guide",
+          deep_link: link.deep_link,
+          language: "en",
+          metadata: Object.assign({}, link.metadata, { variant })
+        });
+        const { error } = await supabase.from("guides").insert([payload]);
+        if (error)
+          await logToSupabase("warn", "Guides insert failed (non-blocking)", {
+            error: error.message,
+            payload
+          });
+        else counts.guides++;
+      }
+      continue;
+    }
 
-    // ---------------------------------------------------
+    // Activities fallback
+    if (!(await existsInTable("activities", link.affiliate_id, link.deep_link))) {
+      const payload = injectGenerationMeta({
+        affiliate_id: link.affiliate_id,
+        destination_slug: slug,
+        name: name || null,
+        category: "activity",
+        deep_link: link.deep_link,
+        duration: null,
+        price: null,
+        currency: null,
+        rating: null,
+        metadata: Object.assign({}, link.metadata, { variant })
+      });
+      const { error } = await supabase.from("activities").insert([payload]);
+      if (error)
+        await logToSupabase("warn", "Activities insert failed (non-blocking)", {
+          error: error.message,
+          payload
+        });
+      else counts.activities++;
+    }
+  } catch (e) {
+    await logToSupabase("error", "Specialized insert error", { error: e.message, link });
+  }
+}
+
+await logToSupabase("info", "Specialized inserts finished", {
+  ...counts,
+  generation_id: generationId
+});
+
+// ---------------------------------------------------
 // Finalize generation record
 // ---------------------------------------------------
+
 await supabase
   .from('data_generations')
   .update({

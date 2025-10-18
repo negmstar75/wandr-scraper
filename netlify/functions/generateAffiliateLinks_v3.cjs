@@ -23,13 +23,15 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Create new data generation batch
 // -----------------------
 let generationId = null;
+
 try {
   const { data: genRow, error: genErr } = await supabase
     .from("data_generations")
     .insert([
       {
         generated_by: "generateAffiliateLinks_v3.cjs",
-        notes: "Auto batch started before affiliate link generation"
+        notes: "Auto batch started before affiliate link generation",
+        started_at: new Date()
       }
     ])
     .select("id")
@@ -43,33 +45,16 @@ try {
   }
 } catch (err) {
   console.error("⚠️ Error during generation batch insert:", err.message);
-}
-
-
-// ---------------------------------------------------
-// Initialize generation batch metadata
-// ---------------------------------------------------
-const { data: genInsert, error: genErr } = await supabase
-  .from('data_generations')
-  .insert({
-    generated_by: 'generateAffiliateLinks_v3',
-    started_at: new Date(),
-    notes: 'Automated batch run for affiliate deep links'
-  })
-  .select('generation_id')
-  .single();
-
-if (genErr) {
-  console.error('❌ Failed to create generation record:', genErr.message);
   process.exit(1);
 }
 
-const generationId = genInsert?.generation_id;
-console.log('✅ Generation batch started:', generationId);
+// ✅ Generation batch successfully initialized
+console.log("✅ Generation batch started:", generationId);
 
 // -----------------------------
 // Templates (multi-variant)
 // -----------------------------
+
 const affiliateTemplates = {
   booking: {
     name: "Booking.com",

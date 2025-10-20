@@ -459,11 +459,35 @@ function buildRentalDates(checkin) {
       return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
     }
 
-    // compute dates (tomorrow + 7)
-    const depart = todayISO(1); // tomorrow
-    const ret = todayISO(8); // tomorrow +7
-    const checkin = depart;
-    const checkout = ret;
+// ---------------------------------------------------
+// Compute base travel dates per category
+// ---------------------------------------------------
+const tomorrow = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
+const plus1 = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+const plus7 = new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
+
+// Convert to yyyy-mm-dd
+function fmt(d) {
+  return d.toISOString().split("T")[0];
+}
+
+// Default: flights/hotels = tomorrow → +7
+let depart = fmt(tomorrow);
+let ret = fmt(plus7);
+let checkin = depart;
+let checkout = ret;
+
+// Rentals / attractions override (tomorrow → +1)
+if (["cars", "rentalcars"].includes(getQuery(event, "type")) ||
+    /cars|rental|attraction|activity/i.test(getQuery(event, "mode"))) {
+  depart = fmt(tomorrow);
+  ret = fmt(plus1);
+  checkin = depart;
+  checkout = ret;
+}
+
+await logToSupabase("info", "Computed travel date ranges", { depart, ret, checkin, checkout });
+
 
     if (!origin || String(origin).trim() === "") origin = "LAX";
 

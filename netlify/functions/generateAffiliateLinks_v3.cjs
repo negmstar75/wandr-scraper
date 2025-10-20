@@ -84,41 +84,61 @@ exports.handler = async (event, context) => {
   // -----------------------------
   const affiliateTemplates = {
     // Booking.com
-booking: {
-  name: "Booking.com",
-  variants: {
-    stays: {
-      template:
-        "https://www.booking.com/searchresults.html?checkin={checkin}&checkout={checkout}&ss={destination}&group_adults={adults}&group_children=0&no_rooms=1",
-      params: ["destination", "checkin", "checkout", "adults"],
-    },
-    attractions: {
-      // ✅ corrected: proper attractions path
-      template:
-        "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html?start_date={checkin}&end_date={checkout}",
-      params: ["country", "city_slug", "checkin", "checkout"],
-    },
-    cars: {
-      // ✅ corrected: safe placeholders for rental dates
-      template:
-        "https://cars.booking.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&doDay={doDay}&doMonth={doMonth}&doYear={doYear}&driversAge={driversAge}",
-      params: ["destination", "puDay", "puMonth", "puYear", "doDay", "doMonth", "doYear", "driversAge"],
-    },
-  },
-},
+    booking: {
+      name: "Booking.com",
+      variants: {
+        stays: {
+          template:
+            "https://www.booking.com/searchresults.html?checkin={checkin}&checkout={checkout}&ss={destination}&group_adults={adults}&group_children=0&no_rooms=1",
+          params: ["destination", "checkin", "checkout", "adults"],
+        },
 
-   // Rentalcars
-rentalcars: {
-  name: "Rentalcars",
-  variants: {
-    default: {
-      // ✅ corrected: includes pickup/dropoff dates safely
-      template:
-        "https://www.rentalcars.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&doDay={doDay}&doMonth={doMonth}&doYear={doYear}&driversAge={driversAge}",
-      params: ["destination", "puDay", "puMonth", "puYear", "doDay", "doMonth", "doYear", "driversAge"],
+        attractions: {
+          // Booking Attractions – country + city_slug (e.g. /attractions/searchresults/fr/paris.html)
+          template:
+            "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html?start_date={checkin}&end_date={checkout}&aid=818288&label=mkt123sc",
+          params: ["country", "city_slug", "checkin", "checkout"],
+        },
+
+        cars: {
+          // Booking Cars – safe dates + fallback age=30
+          // Supports both pickup (pu) and drop-off (do) with correct year/month/day format
+          template:
+            "https://cars.booking.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&doDay={doDay}&doMonth={doMonth}&doYear={doYear}&driversAge={driversAge}",
+          params: [
+            "destination",
+            "puDay",
+            "puMonth",
+            "puYear",
+            "doDay",
+            "doMonth",
+            "doYear",
+            "driversAge",
+          ],
+        },
+      },
     },
-  },
-},
+
+    rentalcars: {
+      name: "Rentalcars",
+      variants: {
+        default: {
+          // Rentalcars uses 1 day delta logic and can reuse same pickup/drop coordinates if needed
+          template:
+            "https://www.rentalcars.com/search-results?locationName={destination}&pickUpDay={puDay}&pickUpMonth={puMonth}&pickUpYear={puYear}&dropOffDay={doDay}&dropOffMonth={doMonth}&dropOffYear={doYear}&driversAge={driversAge}",
+          params: [
+            "destination",
+            "puDay",
+            "puMonth",
+            "puYear",
+            "doDay",
+            "doMonth",
+            "doYear",
+            "driversAge",
+          ],
+        },
+      },
+    },
     
     expedia: {
       name: "Expedia",

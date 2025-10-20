@@ -83,26 +83,43 @@ exports.handler = async (event, context) => {
   // Templates (multi-variant)
   // -----------------------------
   const affiliateTemplates = {
-    booking: {
-      name: "Booking.com",
-      variants: {
-        stays: {
-          template:
-            "https://www.booking.com/searchresults.html?checkin={checkin}&checkout={checkout}&ss={destination}&group_adults={adults}&group_children=0&no_rooms=1",
-          params: ["destination", "checkin", "checkout", "adults"],
-        },
-        attractions: {
-          template: "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html",
-          params: ["country", "city_slug"],
-        },
-        cars: {
-          template:
-            "https://cars.booking.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&driversAge={driversAge}",
-          params: ["destination", "puDay", "puMonth", "puYear", "driversAge"],
-        },
-      },
+    // Booking.com
+booking: {
+  name: "Booking.com",
+  variants: {
+    stays: {
+      template:
+        "https://www.booking.com/searchresults.html?checkin={checkin}&checkout={checkout}&ss={destination}&group_adults={adults}&group_children=0&no_rooms=1",
+      params: ["destination", "checkin", "checkout", "adults"],
     },
+    attractions: {
+      // ✅ corrected: proper attractions path
+      template:
+        "https://www.booking.com/attractions/searchresults/{country}/{city_slug}.html?start_date={checkin}&end_date={checkout}",
+      params: ["country", "city_slug", "checkin", "checkout"],
+    },
+    cars: {
+      // ✅ corrected: safe placeholders for rental dates
+      template:
+        "https://cars.booking.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&doDay={doDay}&doMonth={doMonth}&doYear={doYear}&driversAge={driversAge}",
+      params: ["destination", "puDay", "puMonth", "puYear", "doDay", "doMonth", "doYear", "driversAge"],
+    },
+  },
+},
 
+   // Rentalcars
+rentalcars: {
+  name: "Rentalcars",
+  variants: {
+    default: {
+      // ✅ corrected: includes pickup/dropoff dates safely
+      template:
+        "https://www.rentalcars.com/search-results?locationName={destination}&puDay={puDay}&puMonth={puMonth}&puYear={puYear}&doDay={doDay}&doMonth={doMonth}&doYear={doYear}&driversAge={driversAge}",
+      params: ["destination", "puDay", "puMonth", "puYear", "doDay", "doMonth", "doYear", "driversAge"],
+    },
+  },
+},
+    
     expedia: {
       name: "Expedia",
       variants: {
@@ -139,21 +156,50 @@ exports.handler = async (event, context) => {
       },
     },
 
+    // Hostelworld
+hostelworld: {
+  name: "Hostelworld",
+  variants: {
+    default: {
+      // ✅ corrected: full search URL instead of wrapper-only
+      template:
+        "https://www.hostelworld.com/findabed.php/ChosenCity.{slug}?from={checkin}&to={checkout}&guests={adults}",
+      params: ["slug", "checkin", "checkout", "adults"],
+    },
+  },
+}, 
+
+    // Airalo
+airalo: {
+  name: "Airalo",
+  variants: {
+    esim: {
+      // ✅ corrected: ensure country substitution
+      template: "https://www.airalo.com/{country}-esim",
+      params: ["country"],
+    },
+  },
+},
+    // Flights (Cheapoair, WayAway, Aviasales) – patch in same section
+cheapoair: {
+  name: "CheapOair",
+  variants: {
+    default: {
+      // ✅ corrected: dynamic origin/destination + dates
+      template:
+        "https://www.cheapoair.com/air/listing?d1={origin}&d2={destination}&dt1={depart}&dt2={return}&tripType={tripType}&adults={adults}",
+      params: ["origin", "destination", "depart", "return", "tripType", "adults"],
+    },
+  },
+},
+
     tiqets: { name: "Tiqets", variants: { default: { template: "https://www.tiqets.com/en/things-to-do-in-{slug}-c66746/", params: ["slug"] } } },
 
     klook: { name: "Klook", variants: { default: { template: "https://www.klook.com/search/result/?query={destination}&sort=most_relevant", params: ["destination"] } } },
 
-    rentalcars: { name: "Rentalcars", variants: { default: { template: "https://www.rentalcars.com/search-results?locationName={destination}", params: ["destination"] } } },
-
-    cheapoair: { name: "CheapOair", variants: { default: { template: "https://www.cheapoair.com/air/listing?d1={origin}&d2={destination}&dt1={depart}&dt2={return}&tripType={tripType}", params: ["origin", "destination", "depart", "return", "tripType"] } } },
-
-    hostelworld: { name: "Hostelworld", variants: { default: { template: "https://www.hostelworld.com/s?q={destination}&from={checkin}&to={checkout}&guests={adults}", params: ["destination", "checkin", "checkout", "adults"] } } },
-
     wegotrip: { name: "WeGoTrip", variants: { default: { template: "https://wegotrip.com/{slug}-d3/", params: ["slug"] }, search: { template: "https://wegotrip.com/search?query={destination}", params: ["destination"] } } },
 
     gocity: { name: "GoCity", variants: { default: { template: "https://gocity.com/en/{slug}/passes", params: ["slug"] }, country: { template: "https://gocity.com/en/{country}/", params: ["country"] } } },
-
-    airalo: { name: "Airalo", variants: { esim: { template: "https://www.airalo.com/{country}-esim", params: ["country"] } } },
 
     lonelyplanet: {
       name: "Lonely Planet",
@@ -354,6 +400,25 @@ exports.handler = async (event, context) => {
     "12go",
     "ticketnetwork"
   ]);
+
+  // ---------------------------------------------------
+// Helper: build safe rental pickup/dropoff dates
+// ---------------------------------------------------
+function buildRentalDates(checkin) {
+  const pickup = new Date(checkin || Date.now());
+  const dropoff = new Date(pickup.getTime() + 24 * 60 * 60 * 1000); // +1 day
+
+  return {
+    puDay: pickup.getUTCDate(),
+    puMonth: pickup.getUTCMonth() + 1,
+    puYear: pickup.getUTCFullYear(),
+    doDay: dropoff.getUTCDate(),
+    doMonth: dropoff.getUTCMonth() + 1,
+    doYear: dropoff.getUTCFullYear(),
+    driversAge: 30,
+  };
+}
+
 // -----------------------------
 // Continue handler logic (build dataset, resolve affiliates, upsert, specialized inserts, finalize)
 // -----------------------------
@@ -790,6 +855,9 @@ exports.handler = async (event, context) => {
           }
           continue;
         }
+        if (partner === "booking" || partner === "rentalcars") {
+  Object.assign(params, buildRentalDates(params.checkin));
+}
 
         // Activities fallback
         if (!(await existsInTable("activities", link.affiliate_id, link.deep_link))) {

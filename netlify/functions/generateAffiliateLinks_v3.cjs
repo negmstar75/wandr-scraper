@@ -558,21 +558,40 @@ await logToSupabase("info", "Computed travel date ranges", { depart, ret, checki
           itinerary_id,
         };
 
-        // Rental/cars specific computed values
-        if (baseKey === "rentalcars" || (baseKey === "booking" && variantKey === "cars")) {
-          const rental = buildRentalDates(new Date());
-          templateData.puDay = rental.puDay;
-          templateData.puMonth = rental.puMonth;
-          templateData.puYear = rental.puYear;
-          templateData.doDay = rental.doDay;
-          templateData.doMonth = rental.doMonth;
-          templateData.doYear = rental.doYear;
-          templateData.puHour = "10";
-          templateData.doHour = "10";
-          templateData.driversAge = 30;
-          templateData.pickupDate = rental.pickupDate;
-          templateData.dropoffDate = rental.dropoffDate;
-        }
+//-------------------------------------------------------
+// Enforce date rules by partner category
+//-------------------------------------------------------
+const now = new Date();
+const fmt = (d) => d.toISOString().split("T")[0];
+const tomorrow = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000);
+const plus1 = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+const plus7 = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000);
+
+// Flights / Hotels → tomorrow → +7
+if (/(flight|flights|stays|hotel)/i.test(variantKey) ||
+    ["cheapoair", "aviasales", "wayaway", "booking", "expedia", "hostelworld"].includes(baseKey)) {
+  templateData.checkin = fmt(tomorrow);
+  templateData.checkout = fmt(plus7);
+  templateData.depart = fmt(tomorrow);
+  templateData.return = fmt(plus7);
+}
+
+// Rentals / Cars / Activities → tomorrow → +1
+if (/(car|rental|activ|attract|experience)/i.test(variantKey) ||
+    ["rentalcars", "getyourguide", "tiqets", "klook", "wegotrip", "gocity"].includes(baseKey)) {
+  templateData.checkin = fmt(tomorrow);
+  templateData.checkout = fmt(plus1);
+  templateData.depart = fmt(tomorrow);
+  templateData.return = fmt(plus1);
+}
+
+await logToSupabase("info", "Applied enforced date logic", {
+  baseKey,
+  variantKey,
+  checkin: templateData.checkin,
+  checkout: templateData.checkout,
+});
+
 
         if (baseKey === "airalo") {
           templateData.country = country || destination;

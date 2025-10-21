@@ -602,6 +602,36 @@ await logToSupabase("info", "Applied enforced date logic", {
         let raw_target = null;
         let usedMapping = false;
 
+        // === TripAdvisor Fix & Safety Patch ===
+if (baseKey === "tripadvisor") {
+  if (raw_target && !raw_target.includes("&p=")) {
+    raw_target = raw_target.replace("tp.media/r?", "tp.media/r?p=4456&");
+  }
+}
+
+// === Safety for Deep Link Base URLs ===
+if (raw_target && raw_target.includes("tp.media/r?")) {
+  // Ensure affiliate marker and campaign ID are preserved
+  if (!raw_target.includes("marker=")) {
+    raw_target += "&marker=466615";
+  }
+  if (!raw_target.includes("trs=")) {
+    raw_target += "&trs=252990";
+  }
+}
+
+// === Safety Fallback for Non-Deep-Link Partners ===
+const baseUrlFallbacks = {
+  'wegotrip': 'https://wegotrip.com/',
+  'rentalcars': 'https://www.rentalcars.com/',
+  'eatwith': 'https://www.eatwith.com/',
+  'wayaway': 'https://wayaway.io/',
+  'aviasales': 'https://www.aviasales.com/',
+};
+if (baseUrlFallbacks[baseKey] && !raw_target) {
+  raw_target = baseUrlFallbacks[baseKey];
+}
+
         // If this partner is in the DEEP_LINK_PARTNERS set, attempt to build a deep link via template or mapping override.
         if (DEEP_LINK_PARTNERS.has(baseKey)) {
 

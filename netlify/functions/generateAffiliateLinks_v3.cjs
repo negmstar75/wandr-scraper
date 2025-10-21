@@ -421,13 +421,12 @@ cheapoair: {
     "ticketnetwork"
   ]);
 
-  // ---------------------------------------------------
+// ---------------------------------------------------
 // Helper: build safe rental pickup/dropoff dates
 // ---------------------------------------------------
 function buildRentalDates(checkin) {
   const pickup = new Date(checkin || Date.now());
   const dropoff = new Date(pickup.getTime() + 24 * 60 * 60 * 1000); // +1 day
-
   return {
     puDay: pickup.getUTCDate(),
     puMonth: pickup.getUTCMonth() + 1,
@@ -442,85 +441,189 @@ function buildRentalDates(checkin) {
 // -----------------------------
 // Continue handler logic (build dataset, resolve affiliates, upsert, specialized inserts, finalize)
 // -----------------------------
+try {
+  // Pull query params (again safe access to event)
+  const slug = getQuery(event, "slug");
+  const name = getQuery(event, "name");
+  const countryQ = getQuery(event, "country");
+  const cityQ = getQuery(event, "city");
+  let origin = getQuery(event, "origin");
+  const mode = getQuery(event, "mode", "all"); // all | activities | hotels | flights
+  const itinerary_id = getQuery(event, "itinerary_id");
+  const debug = (getQuery(event, "debug", "false") === "true");
 
+  if (!slug || !name) {
+    await logToSupabase("warn", "Missing required parameters", { slug, name, countryQ, cityQ });
+    return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
+  }
+
+  // ---------------------------------------------------
+  // Compute base travel dates per category
+  // ---------------------------------------------------
+  const tomorrow = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
+  const plus1 = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+  const plus7 = new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
+
+  // Convert to yyyy-mm-dd
+  function fmt(d) {
+    return d.toISOString().split("T")[0];
+  }
+
+  // Default: flights/hotels = tomorrow → +7
+  let depart = fmt(tomorrow);
+  let ret = fmt(plus7);
+  let checkin = depart;
+  let checkout = ret;
+
+  // Rentals / attractions override (tomorrow → +1)
+  if (
+    ["cars", "rentalcars"].includes(getQuery(event, "type")) ||
+    /cars|rental|attraction|activity/i.test(getQuery(event, "mode"))
+  ) {
+    depart = fmt(tomorrow);
+    ret = fmt(plus1);
+    checkin = depart;
+    checkout = ret;
+  }
+
+  await logToSupabase("info", "Computed travel date ranges", { depart, ret, checkin, checkout });
+
+  // ---------------------------------------------------
+  // Normalize & prepare contextual variables
+  // ---------------------------------------------------
+  if (!origin || String(origin).trim() === "") origin = "LAX";
+
+  let country = (countryQ && countryQ.trim()) || slug.split("/")[0] || "us";
+  country = String(country).toLowerCase();
+  const country_code = country.slice(0, 2);
+  const city = cityQ || name;
+  const city_slug = cityToSlug(city);
+  const destination = name || city;
+
+  await logToSupabase("info", "Start affiliate generation v3", {
+    slug,
+    name,
+    country,
+    city,
+    origin,
+    mode,
+    debug,
+    generationId,
+  });
+
+  // ---------------------------------------------------
+  // Load partner_mappings (override system)
+  // ---------------------------------------------------
+  const mappings = {};
   try {
-    // Pull query params (again safe access to event)
-    const slug = getQuery(event, "slug");
-    const name = getQuery(event, "name");
-    const countryQ = getQuery(event, "country");
-    const cityQ = getQuery(event, "city");
-    let origin = getQuery(event, "origin");
-    const mode = getQuery(event, "mode", "all"); // all | activities | hotels | flights
-    const itinerary_id = getQuery(event, "itinerary_id");
-    const debug = (getQuery(event, "debug", "false") === "true");
+    const { data: pmRows, error: pmErr } = await supabase
+      .from("partner_mappings")
+      .select("*")
+      .eq("destination_slug", slug);
 
-    if (!slug || !name) {
-      await logToSupabase("warn", "Missing required parameters", { slug, name, countryQ, cityQ });
-      return { statusCode: 400, body: JSON.stringify({ error: "Missing required parameters: slug, name" }) };
+    if (pmErr) {
+      await logToSupabase("warn", "partner_mappings select returned error (will fallback)", {
+        error: pmErr.message,
+      });
+    } else if (Array.isArray(pmRows)) {
+      for (const r of pmRows) {
+        const code = String(r.partner_code || r.partner || "").toLowerCase();
+        if (!code) continue;
+        mappings[code] = r;
+      }
     }
+  } catch (e) {
+    await logToSupabase("warn", "partner_mappings query exception (will fallback)", { error: e.message });
+  }
 
-// ---------------------------------------------------
-// Compute base travel dates per category
-// ---------------------------------------------------
-const tomorrow = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);
-const plus1 = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
-const plus7 = new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
+  // ---------------------------------------------------
+  // ✈️🚗 Hybrid Conditional Logic (Flights & Rentals)
+  // ---------------------------------------------------
+  const userHasOrigin = origin && origin.trim().length >= 3;
 
-// Convert to yyyy-mm-dd
-function fmt(d) {
-  return d.toISOString().split("T")[0];
-}
+  // Helper: get today ISO + offset
+  function todayISO(offsetDays = 0) {
+    const d = new Date(Date.now() + offsetDays * 86400000);
+    return d.toISOString().split("T")[0];
+  }
 
-// Default: flights/hotels = tomorrow → +7
-let depart = fmt(tomorrow);
-let ret = fmt(plus7);
-let checkin = depart;
-let checkout = ret;
+  function cityToSlug(txt) {
+    return txt
+      ? txt
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+      : "";
+  }
 
-// Rentals / attractions override (tomorrow → +1)
-if (["cars", "rentalcars"].includes(getQuery(event, "type")) ||
-    /cars|rental|attraction|activity/i.test(getQuery(event, "mode"))) {
-  depart = fmt(tomorrow);
-  ret = fmt(plus1);
-  checkin = depart;
-  checkout = ret;
-}
+  const hybridConfig = {
+    flights: ["wayaway", "aviasales", "cheapoair", "tripadvisor", "expedia", "kayak"],
+    rentals: ["rentalcars", "booking", "expedia"],
+  };
 
-await logToSupabase("info", "Computed travel date ranges", { depart, ret, checkin, checkout });
+  async function handleHybridPartner(baseKey, pCfg, destination) {
+    let raw_target = "";
+    const depCode = origin.toUpperCase();
+    const arrCode = cityToSlug(destination).substring(0, 3).toUpperCase();
 
+    // --- Flights ---
+    if (hybridConfig.flights.includes(baseKey)) {
+      if (!userHasOrigin) {
+        await logToSupabase("info", "Flight partner skipped (missing origin)", { partner: baseKey, slug });
+        raw_target = pCfg.baseUrl || `https://${baseKey}.com/`;
+      } else {
+        const depDate = todayISO(1).replace(/-/g, "");
+        const retDate = todayISO(8).replace(/-/g, "");
 
-    if (!origin || String(origin).trim() === "") origin = "LAX";
-
-    // country / city
-    let country = (countryQ && countryQ.trim()) || (slug.split("/")[0]) || "us";
-    country = String(country).toLowerCase();
-    const country_code = country.slice(0, 2);
-    const city = cityQ || name;
-    const city_slug = cityToSlug(city);
-    const destination = name || city;
-
-    await logToSupabase("info", "Start affiliate generation v3", { slug, name, country, city, origin, mode, debug, generationId });
-
-    // LOAD partner_mappings (if exists)
-    const mappings = {};
-    try {
-      const { data: pmRows, error: pmErr } = await supabase.from("partner_mappings").select("*").eq("destination_slug", slug);
-      if (pmErr) {
-        await logToSupabase("warn", "partner_mappings select returned error (will fallback)", { error: pmErr.message });
-      } else if (Array.isArray(pmRows)) {
-        for (const r of pmRows) {
-          const code = String(r.partner_code || r.partner || "").toLowerCase();
-          if (!code) continue;
-          mappings[code] = r;
+        switch (baseKey) {
+          case "wayaway":
+            raw_target = `https://wayaway.io/search/${depCode}${depDate}${arrCode}${retDate}1`;
+            break;
+          case "aviasales":
+            raw_target = `https://www.aviasales.com/search/${depCode}${depDate}${arrCode}${retDate}1`;
+            break;
+          case "tripadvisor":
+            raw_target = `https://tp.media/r?campaign_id=149&marker=466615&p=4456&trs=252990&u=https%3A%2F%2Fwww.tripadvisor.com%2FCheapFlightsSearchResults-g60763-a_airport0.${depCode}-a_airport1.${arrCode}-a_date0.${depDate}-a_date1.${retDate}`;
+            break;
+          case "expedia":
+            raw_target = `https://www.expedia.com/Flights-Search?trip=roundtrip&leg1=from:${depCode},to:${arrCode},departure:${todayISO(
+              1
+            )}TANYT&leg2=from:${arrCode},to:${depCode},departure:${todayISO(8)}TANYT`;
+            break;
+          case "kayak":
+            raw_target = `https://booking.kayak.com/flights/${depCode}-${arrCode}/${todayISO(1)}/${todayISO(8)}`;
+            break;
+          default:
+            raw_target = pCfg.baseUrl || `https://${baseKey}.com/flights`;
+            break;
         }
       }
-    } catch (e) {
-      await logToSupabase("warn", "partner_mappings query exception (will fallback)", { error: e.message });
     }
 
-    // Build partner dataset
-    const allPartnersData = [];
-    const templateMisses = [];
+    // --- Rentals ---
+    else if (hybridConfig.rentals.includes(baseKey)) {
+      if (!destination || !slug) {
+        await logToSupabase("info", "Rental partner skipped (missing destination)", { partner: baseKey });
+        raw_target = pCfg.baseUrl || `https://${baseKey}.com/cars`;
+      } else {
+        const dates = buildRentalDates(checkin);
+        raw_target =
+          `https://www.rentalcars.com/search-results?` +
+          `locationName=${encodeURIComponent(destination)}` +
+          `&driversAge=${dates.driversAge}` +
+          `&puDay=${dates.puDay}&puMonth=${dates.puMonth}&puYear=${dates.puYear}` +
+          `&doDay=${dates.doDay}&doMonth=${dates.doMonth}&doYear=${dates.doYear}`;
+      }
+    }
+
+    return raw_target;
+  }
+
+  // ---------------------------------------------------
+  // Build partner dataset & continue core logic
+  // ---------------------------------------------------
+  const allPartnersData = [];
+  const templateMisses = [];
 
     for (const [rawKey, pCfg] of Object.entries(AFFILIATE_CONFIG.partners)) {
       const baseKey = normalizeKey(rawKey);

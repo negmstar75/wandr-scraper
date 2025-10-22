@@ -35,6 +35,26 @@ async function logToSupabase(level, message, details = {}) {
 // -----------------------------
 // Helpers (single source of truth)
 // -----------------------------
+// Safe Query Extractor — supports both Netlify and local test contexts
+function getQuery(event, key, defaultValue = "") {
+  try {
+    if (!event) return defaultValue;
+    if (event.queryStringParameters && key in event.queryStringParameters) {
+      return event.queryStringParameters[key] || defaultValue;
+    }
+    // Sometimes event.queryStringParameters is nested inside event.rawQuery or event.query
+    if (event.rawQuery) {
+      const params = new URLSearchParams(event.rawQuery);
+      return params.get(key) || defaultValue;
+    }
+    if (event.query && key in event.query) return event.query[key] || defaultValue;
+    return defaultValue;
+  } catch (e) {
+    console.warn("getQuery() failed for key:", key, e.message);
+    return defaultValue;
+  }
+}
+
 function pad(n) { return n < 10 ? `0${n}` : String(n); }
 
 function todayISO(offset = 0) {

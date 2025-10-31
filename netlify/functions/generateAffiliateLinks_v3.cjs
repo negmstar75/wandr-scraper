@@ -7,13 +7,11 @@
  * Supports both static override mappings and dynamic deep link construction.
  */
 
-const { Pool } = require("pg");
+const { createClient } = require("@supabase/supabase-js");
 const { v4: uuidv4 } = require("uuid");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+// Supabase client
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // ------------------------------------------
 // Helpers

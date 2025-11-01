@@ -13,6 +13,11 @@ const { v4: uuidv4 } = require("uuid");
 // Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
 // ------------------------------------------
 // Helpers
 // ------------------------------------------

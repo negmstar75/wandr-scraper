@@ -21,7 +21,6 @@ const supabase = createClient(
 // Helpers
 // ----------------------------------------------------------
 function formatDate(offsetDays = 0) {
- const generation_id = uuidv4();
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
   const y = d.getFullYear();
@@ -129,8 +128,6 @@ async function insertGeneratedLink({
     return { id: "debug-mode" };
   }
 
-  const generation_id = uuidv4();
-
   const { data, error } = await supabase
     .from("partner_affiliate_links")
     .upsert(
@@ -169,6 +166,7 @@ exports.handler = async function (event) {
   );
 
   try {
+    const generation_id = uuidv4(); // ✅ one per batch run
     const affiliates = await getActiveAffiliates();
     const targetAffiliates =
       partners.length > 0

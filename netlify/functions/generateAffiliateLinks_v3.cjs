@@ -1,31 +1,25 @@
 /**
  * generateAffiliateLinks_v3.cjs
  * -----------------------------------------------
- * Hybrid affiliate link generator for WANDR
+ * Hybrid affiliate link generator for WANDR (Supabase version)
  * Uses: affiliates, partner_mappings, partner_affiliate_links (+ vw_partner_flight_previews)
  * Compatible with Booking, Expedia, Aviasales, Kayak, Elsewhere, GoCity, etc.
- * Supports both static override mappings and dynamic deep link construction.
  */
 
 const { createClient } = require("@supabase/supabase-js");
-const { Pool } = require("pg"); // ✅ this was missing
 const { v4: uuidv4 } = require("uuid");
 
-// Supabase client (optional, used for other functions)
+// ----------------------------------------------------------
+// Initialize Supabase client (Server-side, uses Service Role key)
+// ----------------------------------------------------------
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Postgres connection (for affiliate link generation)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-// ------------------------------------------
+// ----------------------------------------------------------
 // Helpers
-// ------------------------------------------
+// ----------------------------------------------------------
 function formatDate(offsetDays = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -39,38 +33,46 @@ function getFlightRange() {
   return { depart: formatDate(7), ret: formatDate(14) };
 }
 
-async function fetchFlightPreviews(partnerCode) {
-  const q = `
-    SELECT partner_code, destination_slug, override_url, city_slug, country_slug, country_code, geo_id
-    FROM vw_partner_flight_previews
-    WHERE partner_code = $1 AND active IS TRUE
-  `;
-  return pool.query(q, [partnerCode]);
-}
-
+// ----------------------------------------------------------
+// Fetchers (Supabase versions)
+// ----------------------------------------------------------
 async function getActiveAffiliates() {
-  const sql = `
-    SELECT affiliate_id, partner_code, template_url, base_url
-    FROM affiliates
-    WHERE active IS TRUE;
-  `;
-  return (await pool.query(sql)).rows;
+  const { data, error } = await supabase
+    .from("affiliates")
+    .select("affiliate_id, partner_code, template_url, base_url")
+    .eq("active", true);
+
+  if (error) throw new Error(`Error fetching affiliates: ${error.message}`);
+  return data;
 }
 
 async function getPartnerMappings(partnerCode) {
-  const sql = `
-    SELECT city_slug, country_slug, country_code, geo_id, override_url, override_slug
-    FROM partner_mappings
-    WHERE partner_code = $1 AND active IS TRUE;
-  `;
-  return (await pool.query(sql, [partnerCode])).rows;
+  const { data, error } = await supabase
+    .from("partner_mappings")
+    .select("city_slug, country_slug, country_code, geo_id, override_url, override_slug")
+    .eq("partner_code", partnerCode)
+    .eq("active", true);
+
+  if (error) throw new Error(`Error fetching mappings for ${partnerCode}: ${error.message}`);
+  return data;
 }
 
-// ------------------------------------------
+async function fetchFlightPreviews(partnerCode) {
+  const { data, error } = await supabase
+    .from("vw_partner_flight_previews")
+    .select("partner_code, destination_slug, override_url, city_slug, country_slug, country_code, geo_id")
+    .eq("partner_code", partnerCode)
+    .eq("active", true);
+
+  if (error) throw new Error(`Error fetching flight previews: ${error.message}`);
+  return data;
+}
+
+// ----------------------------------------------------------
 // Deep link builder
-// ------------------------------------------
+// ----------------------------------------------------------
 function buildDeepLink(partner, mapping) {
-  const { city_slug, country_slug, country_code, geo_id } = mapping;
+  const { city_slug, country_slug, geo_id } = mapping;
   const { depart, ret } = getFlightRange();
 
   switch (partner.partner_code) {
@@ -109,9 +111,9 @@ function buildDeepLink(partner, mapping) {
   }
 }
 
-// ------------------------------------------
-// Insert / upsert generated link
-// ------------------------------------------
+// ----------------------------------------------------------
+// Insert / upsert generated link (Supabase upsert)
+// ----------------------------------------------------------
 async function insertGeneratedLink({
   affiliate_id,
   destination_slug,
@@ -125,38 +127,44 @@ async function insertGeneratedLink({
     return { id: "debug-mode" };
   }
 
-  const sql = `
-    INSERT INTO partner_affiliate_links (
-      affiliate_id, destination_slug, partner_code, deep_link, base_url, generation_id, generated_by
+  const generation_id = uuidv4();
+
+  const { data, error } = await supabase
+    .from("partner_affiliate_links")
+    .upsert(
+      [
+        {
+          affiliate_id,
+          destination_slug,
+          partner_code,
+          deep_link,
+          base_url,
+          generation_id,
+          generated_by: "generateAffiliateLinks_v3",
+          updated_at: new Date().toISOString(),
+        },
+      ],
+      { onConflict: "destination_slug,partner_code,variant" }
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    ON CONFLICT (destination_slug, partner_code, variant)
-    DO UPDATE SET deep_link = EXCLUDED.deep_link, updated_at = NOW()
-    RETURNING id;
-  `;
-  const params = [
-    affiliate_id,
-    destination_slug,
-    partner_code,
-    deep_link,
-    base_url,
-    uuidv4(),
-    "generateAffiliateLinks_v3",
-  ];
-  const { rows } = await pool.query(sql, params);
-  return rows[0];
+    .select("id")
+    .single();
+
+  if (error) throw new Error(`Error inserting link: ${error.message}`);
+  return data;
 }
 
-// ------------------------------------------
+// ----------------------------------------------------------
 // Main handler (supports Postman test mode)
-// ------------------------------------------
+// ----------------------------------------------------------
 exports.handler = async function (event) {
   console.log("🚀 Starting generateAffiliateLinks_v3");
 
   const body = event.body ? JSON.parse(event.body) : {};
   const { partners = [], limit = 0, debug = false } = body;
 
-  console.log(`⚙️  Params => partners:${partners.length ? partners.join(", ") : "all"}, limit:${limit}, debug:${debug}`);
+  console.log(
+    `⚙️ Params => partners:${partners.length ? partners.join(", ") : "all"}, limit:${limit}, debug:${debug}`
+  );
 
   try {
     const affiliates = await getActiveAffiliates();
@@ -186,18 +194,15 @@ exports.handler = async function (event) {
         console.log(`✅ ${partner.partner_code} → ${destination_slug}`);
       }
 
+      // Optional flight previews (debug mode)
       if (
         process.env.DEBUG_FLIGHT_PREVIEWS === "true" &&
         ["booking_kayak", "expedia", "aviasales", "cheapoair"].includes(partner.partner_code)
       ) {
-        try {
-          const previewRows = await fetchFlightPreviews(partner.partner_code);
-          if (previewRows.rows?.length) {
-            console.log(`\n📡 Flight preview (${partner.partner_code}):`);
-            previewRows.rows.slice(0, 3).forEach((r) => console.log(`  ${r.override_url}`));
-          }
-        } catch (err) {
-          console.warn("⚠️ Could not fetch vw_partner_flight_previews:", err.message);
+        const previews = await fetchFlightPreviews(partner.partner_code);
+        if (previews?.length) {
+          console.log(`\n📡 Flight preview (${partner.partner_code}):`);
+          previews.slice(0, 3).forEach((r) => console.log(`  ${r.override_url}`));
         }
       }
     }

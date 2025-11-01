@@ -72,41 +72,67 @@ async function fetchFlightPreviews(partnerCode) {
 // Deep link builder
 // ----------------------------------------------------------
 function buildDeepLink(partner, mapping) {
-  const { city_slug, country_slug, geo_id } = mapping;
+  const { city_slug, country_slug, country_code, geo_id } = mapping;
   const { depart, ret } = getFlightRange();
 
+  // Prepare template replacement base
+  const template = partner.template_url || "";
+  const wrap = partner.base_url || "";
+  const encoded = encodeURIComponent(
+    template
+      .replace("{city_slug}", city_slug || "")
+      .replace("{country_slug}", country_slug || "")
+      .replace("{country_code}", country_code || "")
+      .replace("{geo_id}", geo_id || "")
+      .replace("{depart}", depart)
+      .replace("{return}", ret)
+      .replace("{checkin}", depart)
+      .replace("{checkout}", ret)
+      .replace("{adults}", "2")
+  );
+
+  // --- Specific partner deep-link handling ---
   switch (partner.partner_code) {
-    case "booking_kayak":
-      return `https://booking.kayak.com/flights/CURRENT-${city_slug.toUpperCase()}/${depart}/${ret}`;
-
-    case "expedia":
-      return `https://www.expedia.com/Flights-Search?trip=roundtrip&leg1=from:CURRENT,to:${city_slug},departure:${depart}TANYT&leg2=from:${city_slug},to:CURRENT,departure:${ret}TANYT&mode=search`;
-
-    case "aviasales":
-      return `https://www.aviasales.com/search/CURRENT${depart.slice(5, 10).replace("-", "")}${city_slug
-        .slice(0, 3)
-        .toUpperCase()}${ret.slice(5, 10).replace("-", "")}`;
-
+    case "booking_stays":
+      return `${wrap}&u=${encodeURIComponent(`https://www.booking.com/searchresults.html?ss=${city_slug || country_slug}`)}`;
+    case "booking_cars":
+      return `${wrap}&u=${encodeURIComponent(`https://www.booking.com/cars/index.html?city=${city_slug || country_slug}`)}`;
+    case "booking_attractions":
+      return `${wrap}&u=${encodeURIComponent(`https://www.booking.com/attractions/searchresults/${country_code}/${city_slug}.html`)}`;
     case "cheapoair":
-      return `https://www.cheapoair.com/air/listing?d1=CURRENT&r1=${city_slug.toUpperCase()}&dt1=${depart}&dtype1=A&rtype1=A&d2=${city_slug.toUpperCase()}&r2=CURRENT&dt2=${ret}&dtype2=A&rtype2=A&tripType=ROUNDTRIP`;
-
+      return `${wrap}&u=${encodeURIComponent(
+        `https://www.cheapoair.com/air/listing?d1=CURRENT&r1=${city_slug.toUpperCase()}&dt1=${depart}&d2=${city_slug.toUpperCase()}&r2=CURRENT&dt2=${ret}&tripType=ROUNDTRIP&adults=2`
+      )}`;
+    case "expedia_flights":
+    case "expedia_cars":
+    case "expedia_stays":
+    case "expedia_activities":
+      return `${wrap}&u=${encoded}`;
+    case "tripadvisor_hotels":
     case "tripadvisor_restaurants":
-      return `https://www.tripadvisor.com/Restaurants-${geo_id}-${city_slug}.html`;
-
-    case "tripadvisor_rentals":
-      return `https://www.tripadvisor.com/VacationRentals-${geo_id}-Reviews-${city_slug}-Vacation_Rentals.html`;
-
-    case "elsewhere":
-      return `https://www.elsewhere.io/${country_slug}`;
-
+    case "tripadvisor_attractions":
+    case "tripadvisor_vacation_rentals":
+      return `${wrap}&u=${encoded}`;
     case "gocity":
-      return `https://gocity.com/${city_slug}`;
-
+      return `${wrap}&u=${encodeURIComponent(`https://gocity.com/en/${city_slug || country_slug}`)}`;
+    case "elsewhere":
+      return `${wrap}&u=${encodeURIComponent(`https://www.elsewhere.io/${country_slug}`)}`;
+    case "aviasales":
+      return `${wrap}&u=${encodeURIComponent(
+        `https://www.aviasales.com/search/CURRENT${depart.slice(5, 10).replace("-", "")}${city_slug
+          .slice(0, 3)
+          .toUpperCase()}${ret.slice(5, 10).replace("-", "")}`
+      )}`;
     default:
+      // fallback for any Travelpayouts partner
+      if (wrap.includes("tp.media")) {
+        return `${wrap}&u=${encoded}`;
+      }
+      // direct / manual override
       return (
         mapping.override_url?.replace("{city_slug}", city_slug) ||
-        partner.template_url ||
-        partner.base_url
+        template ||
+        wrap
       );
   }
 }

@@ -166,7 +166,23 @@ exports.handler = async function (event) {
   );
 
   try {
-    const generation_id = uuidv4(); // ✅ one per batch run
+    // Create a data_generation record for tracking this batch
+const generation_id = uuidv4();
+const { error: genError } = await supabase
+  .from("data_generations")
+  .insert([
+    {
+      id: generation_id,
+      generated_by: "generateAffiliateLinks_v3",
+      started_at: new Date().toISOString(),
+      notes: "Automated affiliate link generation batch",
+    },
+  ]);
+
+if (genError) {
+  console.error("⚠️ Failed to create data_generation record:", genError.message);
+}
+
     const affiliates = await getActiveAffiliates();
     const targetAffiliates =
       partners.length > 0

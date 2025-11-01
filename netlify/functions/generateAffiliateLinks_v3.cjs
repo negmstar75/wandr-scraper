@@ -8,11 +8,16 @@
  */
 
 const { createClient } = require("@supabase/supabase-js");
+const { Pool } = require("pg"); // ✅ this was missing
 const { v4: uuidv4 } = require("uuid");
 
-// Supabase client
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+// Supabase client (optional, used for other functions)
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
+// Postgres connection (for affiliate link generation)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },

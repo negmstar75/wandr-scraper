@@ -21,6 +21,7 @@ const supabase = createClient(
 // Helpers
 // ----------------------------------------------------------
 function formatDate(offsetDays = 0) {
+ const generation_id = uuidv4();
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
   const y = d.getFullYear();
@@ -120,6 +121,7 @@ async function insertGeneratedLink({
   partner_code,
   deep_link,
   base_url,
+  generation_id,
   debug = false,
 }) {
   if (debug) {
@@ -188,6 +190,7 @@ exports.handler = async function (event) {
           partner_code: partner.partner_code,
           deep_link: deepLink,
           base_url: partner.base_url,
+          generation_id,
           debug,
         });
 

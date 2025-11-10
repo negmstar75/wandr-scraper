@@ -60,6 +60,65 @@ function safeVal(v) {
 }
 
 // ----------------------------------------------------------
+// Normalization: clean city/place names (airport parentheticals)
+// - Keep descriptive parentheticals with " - " (e.g., "(CDG - Charles De Gaulle)")
+// - Remove plain single codes like "(LAX)"
+// - If duplicate pattern "Name (CODE - desc) (CODE)" keep the descriptive and drop trailing (CODE)
+// ----------------------------------------------------------
+function normalizePlaceName(raw) {
+  if (!raw || typeof raw !== "string") return raw;
+  let s = raw.trim();
+
+  // extract parenthetical contents
+  const parenMatches = [];
+  const re = /\(([^)]+)\)/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    parenMatches.push(m[1].trim());
+  }
+
+  // no parentheses: nothing to do
+  if (parenMatches.length === 0) return s;
+
+  // helper: is plain code (2-4 alnum, maybe with dash)
+  const isPlainCode = (t) => /^[A-Za-z0-9]{1,6}$/.test(t.replace(/\s+/g, ""));
+
+  // if multiple parentheses and first contains " - " (descriptive) and last is plain code duplicates -> drop trailing plain ones
+  if (parenMatches.length > 1 && parenMatches[0].includes(" - ")) {
+    // keep only first descriptive parenthetical
+    const before = s.slice(0, s.indexOf("(")).trim();
+    const kept = `(${parenMatches[0]})`;
+    return `${before}${kept}`.trim();
+  }
+
+  // if exactly one parenthetical and it's a plain code (airport code like (LAX)) -> remove it
+  if (parenMatches.length === 1 && isPlainCode(parenMatches[0])) {
+    // remove the single parenthetical
+    s = s.replace(/\s*\([^)]+\)\s*$/, "").trim();
+    return s;
+  }
+
+  // if there are duplicates like "Name (CODE - desc) (CODE)" but first may or may not have ' - '
+  // fallback: prefer any parenthetical containing " - " (descriptive); if present, keep first such and remove others
+  const desc = parenMatches.find((p) => p.includes(" - "));
+  if (desc) {
+    const before = s.slice(0, s.indexOf("(")).trim();
+    return `${before}(${desc})`.trim();
+  }
+
+  // otherwise keep original (or remove trailing duplicate identical parentheses)
+  // remove exact duplicates at end: e.g., "Name (JFK) (JFK)" -> "Name (JFK)"
+  if (parenMatches.length > 1 && parenMatches[parenMatches.length - 1] === parenMatches[parenMatches.length - 2]) {
+    // remove last duplicate
+    s = s.replace(/\s*\([^)]+\)\s*$/, "").trim(); // remove last
+    return s;
+  }
+
+  // default: return input unchanged (safe fallback)
+  return s;
+}
+
+// ----------------------------------------------------------
 // Template substitution
 // ----------------------------------------------------------
 function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
@@ -76,7 +135,7 @@ function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
     origin_city: safeVal(context.origin_city || mapping.origin_city),
     destination: safeVal(mapping.destination || mapping.city_slug),
     destination_code: safeVal(mapping.destination_code),
-    destination_city: safeVal(mapping.destination_city || mapping.city_slug),
+    destination_city: safeVal(context.destination_city || mapping.destination_city || mapping.city_slug),
     depart: safeVal(extras.depart_iso),
     return: safeVal(extras.return_iso),
     depart_mm_dd_yyyy: safeVal(extras.depart_mm_dd_yyyy),
@@ -373,6 +432,7 @@ exports.handler = async function (event) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
         try {
+          // TripAdvisor geo fallback
           ensureTripadvisorGeoId(mapping);
           if (
             partner.partner_code.startsWith("tripadvisor_") &&
@@ -382,26 +442,52 @@ exports.handler = async function (event) {
             const geo = await fetchGeoIdFromLog(mapping.city_slug, mapping.country_slug);
             if (geo) {
               mapping.geo_id = geo.new_geo_id || mapping.geo_id;
-              mapping.prefixed_geo_id = geo.prefixed_geo_id || `g${geo.new_geo_id}`;
+              mapping.prefixed_geo_id = geo.prefixed_geo_id || (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
               mapping.country_code = mapping.country_code || geo.country_code;
             }
           }
 
-          // origin fallback
+          // origin fallback from flight previews (if partner uses origin)
           if (
             ["aviasales", "expedia_flights", "booking_kayak", "cheapoair"].includes(partner.partner_code)
           ) {
-            if (!mapping.origin_code && flightPreviews[0]?.origin_code)
+            if (!mapping.origin_code && flightPreviews[0]?.origin_code) {
               mapping.origin_code = flightPreviews[0].origin_code;
-            if (!mapping.origin_city && flightPreviews[0]?.origin_city)
-              mapping.origin_city = flightPreviews[0].origin_city;
+            }
+            if (!mapping.origin_city && flightPreviews[0]?.origin_city) {
+              // normalize preview origin_city as well
+              mapping.origin_city = normalizePlaceName(flightPreviews[0].origin_city);
+            }
+          }
+
+          // normalize mapping origin/destination names to avoid duplicates in generated URLs
+          if (mapping.origin_city) {
+            mapping.origin_city = normalizePlaceName(mapping.origin_city);
+            // keep origin fallback in mapping.origin for templates
+            mapping.origin = mapping.origin || mapping.origin_city;
+          } else if (req_origin_city) {
+            mapping.origin_city = normalizePlaceName(req_origin_city);
+            mapping.origin = mapping.origin || mapping.origin_city;
+          } else if (req_origin) {
+            mapping.origin = normalizePlaceName(req_origin);
+            mapping.origin_city = mapping.origin_city || mapping.origin;
+          }
+
+          // normalize destination human name (if present) — don't modify city_slug
+          if (mapping.destination_city) {
+            mapping.destination_city = normalizePlaceName(mapping.destination_city);
+            mapping.destination = mapping.destination || mapping.destination_city;
+          } else if (mapping.city_slug) {
+            // city_slug is slug (e.g., "paris") - don't normalize slug; set destination_city for templates
+            mapping.destination_city = mapping.city_slug;
+            mapping.destination = mapping.destination || mapping.destination_city;
           }
 
           const extras = { ...getFlightRange(), adults: 1 };
           const context = {
             origin_code: req_origin_code,
-            origin_city: req_origin_city,
-            origin: req_origin,
+            origin_city: req_origin_city ? normalizePlaceName(req_origin_city) : undefined,
+            origin: req_origin ? normalizePlaceName(req_origin) : undefined,
           };
 
           const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =

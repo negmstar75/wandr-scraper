@@ -335,7 +335,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     ? applyTemplate(mapping.override_url, mapping, extras, resolved)
     : applyTemplate(template, mapping, extras, resolved);
 
-  switch (partner.partner_code) {
+    switch (partner.partner_code) {
     case "booking_stays":
       return wrapOut(
         base,
@@ -347,8 +347,8 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
     case "booking_attractions": {
-      // Fix double slashes and missing country
-      const countryPart = mapping.country_code || mapping.country_slug || "xx";
+      // ✅ country code must be lowercase
+      const countryPart = (mapping.country_code || mapping.country_slug || "xx").toLowerCase();
       return wrapOut(
         base,
         rawTarget ||
@@ -359,15 +359,15 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     case "gocity":
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
 
-    case "elsewhere":
-      // Ensure proper TP wrapping for tracking
-      return wrapOut(
-        base,
-        rawTarget || `https://www.elsewhere.io/${mapping.country_slug}`
-      );
+    case "elsewhere": {
+      // ✅ Not TP wrapped — direct Elsewhere affiliate tracking link
+      const url = rawTarget ||
+        `https://www.elsewhere.io/${mapping.country_slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
+      return { deep_link: url, rawTarget: url, encodedTarget: encodeURIComponent(url) };
+    }
 
     case "aviasales": {
-      // Always ensure both origin & destination IATA codes exist
+      // ✅ Always ensure both origin & destination IATA codes exist
       const originIata =
         (resolved.origin_code || "").slice(0, 3).toUpperCase() || "CAI";
       const destIata =
@@ -383,12 +383,6 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
-  function wrapOut(b, target) {
-    const encoded = encodeURIComponent(target);
-    const deep_link = wrapTpLink(b, target);
-    return { deep_link, rawTarget: target, encodedTarget: encoded };
-  }
-}
 
 // ----------------------------------------------------------
 // Main handler

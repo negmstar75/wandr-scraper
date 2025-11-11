@@ -292,7 +292,7 @@ async function insertGeneratedLinkWithRetry(payload, { debug = false } = {}) {
 }
 
 // ----------------------------------------------------------
-// Deep link builder (final micro-fix)
+// Deep link builder (final verified fix)
 // ----------------------------------------------------------
 function buildDeepLink(partner, mapping, extras, context = {}) {
   const base = partner.base_url || "";
@@ -304,8 +304,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     "cheapoair",
   ].includes(partner.partner_code);
 
-  // ✅ Ensure proper fallback values
+  // ✅ Normalize mapping safety
   mapping.city_slug = mapping.city_slug || mapping.country_slug || "none";
+  mapping.country_slug = mapping.country_slug || mapping.city_slug || "unknown";
+  mapping.country_code = mapping.country_code || mapping.country_slug?.slice(0, 2).toUpperCase() || "XX";
 
   const resolved = {
     origin_code:
@@ -322,13 +324,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     destination_code:
       mapping.destination_code ||
       mapping.geo_id ||
-      mapping.city_slug ||
-      "",
+      mapping.iata_code ||
+      mapping.city_slug?.slice(0, 3).toUpperCase() ||
+      "XXX",
     destination_city:
       mapping.destination_city || mapping.city_slug || mapping.override_slug,
   };
 
-  // (No throw — just fallback)
   if (partnerNeedsOrigin && !resolved.origin_code && !resolved.origin_city) {
     resolved.origin_code = "CAI";
     resolved.origin_city = "Cairo";
@@ -350,10 +352,9 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
     case "booking_attractions": {
-      let url =
-        rawTarget ||
-        `https://www.booking.com/attractions/searchresults/${(mapping.country_code || mapping.country_slug || "xx").toLowerCase()}/${mapping.city_slug}.html`;
-      url = url.replace(/\/[A-Z]{2}\//g, (m) => m.toLowerCase());
+      const countryPart = (mapping.country_code || mapping.country_slug || "xx").toLowerCase();
+      const url = rawTarget ||
+        `https://www.booking.com/attractions/searchresults/${countryPart}/${mapping.city_slug}.html`;
       return wrapOut(base, url);
     }
 
@@ -361,15 +362,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
 
     case "elsewhere": {
-      let url =
-        rawTarget ||
-        `https://www.elsewhere.io/${mapping.country_slug || "unknown"}`;
-      if (!url.includes("sca_ref=")) {
-        url +=
-          "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program";
-      }
-      // ✅ Make destination_slug show country instead of "none"
-      mapping.city_slug = mapping.country_slug || mapping.city_slug;
+      // ✅ Always set destination_slug to the country for cleaner output
+      const urlBase = rawTarget || `https://www.elsewhere.io/${mapping.country_slug}`;
+      const tracking =
+        "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program";
+      const url = urlBase.includes("sca_ref=") ? urlBase : urlBase + tracking;
+
+      mapping.destination_slug = mapping.country_slug;
       return {
         deep_link: url,
         rawTarget: url,
@@ -378,17 +377,19 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "aviasales": {
-      const originIata = (resolved.origin_code || "CAI")
-        .slice(0, 3)
-        .toUpperCase();
-      const destIata =
+      const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
+      let destIata =
         (resolved.destination_code || "")
           .slice(0, 3)
           .toUpperCase() ||
-        (mapping.iata_code || "").toUpperCase() ||
-        (mapping.city_slug
-          ? mapping.city_slug.slice(0, 3).toUpperCase()
-          : "XXX");
+        (mapping.iata_code || "")
+          .slice(0, 3)
+          .toUpperCase() ||
+        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
+
+      // ✅ ensure destIata always 3 letters
+      destIata = destIata.padEnd(3, "X").substring(0, 3);
+
       const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
       const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
       return wrapOut(base, aviasalesUrl);
@@ -398,7 +399,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
-  // Internal helper
+  // Helper: wrap target for TP
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);
     const deep_link = wrapTpLink(b, target);

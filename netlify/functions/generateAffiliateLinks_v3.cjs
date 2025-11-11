@@ -483,6 +483,7 @@ exports.handler = async function (event) {
       for (const mappingRow of sliced) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
+
         try {
           // TripAdvisor geo fallback
           ensureTripadvisorGeoId(mapping);
@@ -494,7 +495,8 @@ exports.handler = async function (event) {
             const geo = await fetchGeoIdFromLog(mapping.city_slug, mapping.country_slug);
             if (geo) {
               mapping.geo_id = geo.new_geo_id || mapping.geo_id;
-              mapping.prefixed_geo_id = geo.prefixed_geo_id || (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
+              mapping.prefixed_geo_id =
+                geo.prefixed_geo_id || (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
               mapping.country_code = mapping.country_code || geo.country_code;
             }
           }
@@ -507,15 +509,13 @@ exports.handler = async function (event) {
               mapping.origin_code = flightPreviews[0].origin_code;
             }
             if (!mapping.origin_city && flightPreviews[0]?.origin_city) {
-              // normalize preview origin_city as well
               mapping.origin_city = normalizePlaceName(flightPreviews[0].origin_city);
             }
           }
 
-          // normalize mapping origin/destination names to avoid duplicates in generated URLs
+          // normalize mapping origin/destination names
           if (mapping.origin_city) {
             mapping.origin_city = normalizePlaceName(mapping.origin_city);
-            // keep origin fallback in mapping.origin for templates
             mapping.origin = mapping.origin || mapping.origin_city;
           } else if (req_origin_city) {
             mapping.origin_city = normalizePlaceName(req_origin_city);
@@ -525,12 +525,10 @@ exports.handler = async function (event) {
             mapping.origin_city = mapping.origin_city || mapping.origin;
           }
 
-          // normalize destination human name (if present) — don't modify city_slug
           if (mapping.destination_city) {
             mapping.destination_city = normalizePlaceName(mapping.destination_city);
             mapping.destination = mapping.destination || mapping.destination_city;
           } else if (mapping.city_slug) {
-            // city_slug is slug (e.g., "paris") - don't normalize slug; set destination_city for templates
             mapping.destination_city = mapping.city_slug;
             mapping.destination = mapping.destination || mapping.destination_city;
           }
@@ -545,17 +543,24 @@ exports.handler = async function (event) {
           const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =
             buildDeepLink(partner, mapping, extras, context);
 
+          const fallback = !mapping?.id;
+          const from_template = Boolean(partner.template_url && !mapping.override_url);
+
           if (debug) {
             partnerSummaries[partner.partner_code].examples.push({
               destination_slug,
               deep_link,
               raw_target,
+              fallback,
+              from_template,
             });
             previewLinks.push({
               partner: partner.partner_code,
               destination_slug,
               deep_link,
               raw_target,
+              fallback,
+              from_template,
             });
             partnerSummaries[partner.partner_code].success++;
             totalCount++;
@@ -573,20 +578,23 @@ exports.handler = async function (event) {
               encoded_target,
               base_url: partner.base_url,
               generation_id,
+              fallback,
+              from_template,
             },
             { debug }
           );
 
           partnerSummaries[partner.partner_code].success++;
           totalCount++;
-          if (
-            partnerSummaries[partner.partner_code].examples.length < 3
-          ) {
+          if (partnerSummaries[partner.partner_code].examples.length < 3) {
             partnerSummaries[partner.partner_code].examples.push({
               destination_slug,
               deep_link,
+              fallback,
+              from_template,
             });
           }
+
           console.log(`✅ ${partner.partner_code} → ${destination_slug}`);
         } catch (err) {
           partnerSummaries[partner.partner_code].failed++;

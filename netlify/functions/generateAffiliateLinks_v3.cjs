@@ -292,7 +292,7 @@ async function insertGeneratedLinkWithRetry(payload, { debug = false } = {}) {
 }
 
 // ----------------------------------------------------------
-// Deep link builder (patched & finalized)
+// Deep link builder (final micro-fix)
 // ----------------------------------------------------------
 function buildDeepLink(partner, mapping, extras, context = {}) {
   const base = partner.base_url || "";
@@ -304,7 +304,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     "cheapoair",
   ].includes(partner.partner_code);
 
-  // ✅ Ensure fallback for Elsewhere & others without city slug
+  // ✅ Ensure proper fallback values
   mapping.city_slug = mapping.city_slug || mapping.country_slug || "none";
 
   const resolved = {
@@ -312,13 +312,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       context.origin_code ||
       mapping.origin_code ||
       process.env.DEFAULT_ORIGIN_CODE ||
-      "",
+      "CAI",
     origin_city:
       context.origin_city ||
       mapping.origin_city ||
       context.origin ||
       mapping.origin ||
-      "",
+      "Cairo",
     destination_code:
       mapping.destination_code ||
       mapping.geo_id ||
@@ -328,10 +328,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       mapping.destination_city || mapping.city_slug || mapping.override_slug,
   };
 
+  // (No throw — just fallback)
   if (partnerNeedsOrigin && !resolved.origin_code && !resolved.origin_city) {
-    throw new Error(
-      `Missing origin for ${partner.partner_code} destination ${mapping.city_slug}`
-    );
+    resolved.origin_code = "CAI";
+    resolved.origin_city = "Cairo";
   }
 
   const rawTarget = mapping.override_url
@@ -339,9 +339,6 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     : applyTemplate(template, mapping, extras, resolved);
 
   switch (partner.partner_code) {
-    // --------------------------------------------------------
-    // Booking: stays
-    // --------------------------------------------------------
     case "booking_stays":
       return wrapOut(
         base,
@@ -349,33 +346,20 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
           `https://www.booking.com/searchresults.html?ss=${mapping.city_slug},+${mapping.country_slug || mapping.country_code || ""}`
       );
 
-    // --------------------------------------------------------
-    // Booking: cars
-    // --------------------------------------------------------
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
-    // --------------------------------------------------------
-    // Booking: attractions (force lowercase country)
-    // --------------------------------------------------------
     case "booking_attractions": {
       let url =
         rawTarget ||
         `https://www.booking.com/attractions/searchresults/${(mapping.country_code || mapping.country_slug || "xx").toLowerCase()}/${mapping.city_slug}.html`;
-      // Force lowercase if override/template contained uppercase
       url = url.replace(/\/[A-Z]{2}\//g, (m) => m.toLowerCase());
       return wrapOut(base, url);
     }
 
-    // --------------------------------------------------------
-    // GoCity
-    // --------------------------------------------------------
     case "gocity":
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
 
-    // --------------------------------------------------------
-    // Elsewhere (non-TP-wrapped, ensure affiliate query present)
-    // --------------------------------------------------------
     case "elsewhere": {
       let url =
         rawTarget ||
@@ -384,6 +368,8 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
         url +=
           "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program";
       }
+      // ✅ Make destination_slug show country instead of "none"
+      mapping.city_slug = mapping.country_slug || mapping.city_slug;
       return {
         deep_link: url,
         rawTarget: url,
@@ -391,13 +377,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       };
     }
 
-    // --------------------------------------------------------
-    // Aviasales (flight search builder)
-    // --------------------------------------------------------
     case "aviasales": {
-      const originIata = (resolved.origin_code || "")
+      const originIata = (resolved.origin_code || "CAI")
         .slice(0, 3)
-        .toUpperCase() || "CAI";
+        .toUpperCase();
       const destIata =
         (resolved.destination_code || "")
           .slice(0, 3)
@@ -405,22 +388,17 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
         (mapping.iata_code || "").toUpperCase() ||
         (mapping.city_slug
           ? mapping.city_slug.slice(0, 3).toUpperCase()
-          : "");
+          : "XXX");
       const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
       const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
       return wrapOut(base, aviasalesUrl);
     }
 
-    // --------------------------------------------------------
-    // Default fallback
-    // --------------------------------------------------------
     default:
       return wrapOut(base, rawTarget || template || base);
   }
 
-  // --------------------------------------------------------
-  // Internal helper for TP-wrapped partners
-  // --------------------------------------------------------
+  // Internal helper
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);
     const deep_link = wrapTpLink(b, target);

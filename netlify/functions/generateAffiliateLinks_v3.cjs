@@ -335,7 +335,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     ? applyTemplate(mapping.override_url, mapping, extras, resolved)
     : applyTemplate(template, mapping, extras, resolved);
 
-    switch (partner.partner_code) {
+  switch (partner.partner_code) {
     case "booking_stays":
       return wrapOut(
         base,
@@ -361,15 +361,15 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
 
     case "elsewhere": {
       // ✅ Not TP wrapped — direct Elsewhere affiliate tracking link
-      const url = rawTarget ||
+      const url =
+        rawTarget ||
         `https://www.elsewhere.io/${mapping.country_slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
       return { deep_link: url, rawTarget: url, encodedTarget: encodeURIComponent(url) };
     }
 
     case "aviasales": {
       // ✅ Always ensure both origin & destination IATA codes exist
-      const originIata =
-        (resolved.origin_code || "").slice(0, 3).toUpperCase() || "CAI";
+      const originIata = (resolved.origin_code || "").slice(0, 3).toUpperCase() || "CAI";
       const destIata =
         (resolved.destination_code || "").slice(0, 3).toUpperCase() ||
         (mapping.iata_code || "").toUpperCase() ||
@@ -383,6 +383,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
+  // ✅ Close helper
+  function wrapOut(b, target) {
+    const encoded = encodeURIComponent(target);
+    const deep_link = wrapTpLink(b, target);
+    return { deep_link, rawTarget: target, encodedTarget: encoded };
+  }
+} 
 
 // ----------------------------------------------------------
 // Main handler

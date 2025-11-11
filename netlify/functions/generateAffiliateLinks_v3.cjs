@@ -304,6 +304,9 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     "cheapoair",
   ].includes(partner.partner_code);
 
+  // ✅ Ensure fallback for Elsewhere & others without city slug
+  mapping.city_slug = mapping.city_slug || mapping.country_slug || "none";
+
   const resolved = {
     origin_code:
       context.origin_code ||
@@ -336,6 +339,9 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     : applyTemplate(template, mapping, extras, resolved);
 
   switch (partner.partner_code) {
+    // --------------------------------------------------------
+    // Booking: stays
+    // --------------------------------------------------------
     case "booking_stays":
       return wrapOut(
         base,
@@ -343,57 +349,89 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
           `https://www.booking.com/searchresults.html?ss=${mapping.city_slug},+${mapping.country_slug || mapping.country_code || ""}`
       );
 
+    // --------------------------------------------------------
+    // Booking: cars
+    // --------------------------------------------------------
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
+    // --------------------------------------------------------
+    // Booking: attractions (force lowercase country)
+    // --------------------------------------------------------
     case "booking_attractions": {
-      // ✅ country code must be lowercase
-      const countryPart = (mapping.country_code || mapping.country_slug || "xx").toLowerCase();
-      return wrapOut(
-        base,
+      let url =
         rawTarget ||
-          `https://www.booking.com/attractions/searchresults/${countryPart}/${mapping.city_slug}.html`
-      );
+        `https://www.booking.com/attractions/searchresults/${(mapping.country_code || mapping.country_slug || "xx").toLowerCase()}/${mapping.city_slug}.html`;
+      // Force lowercase if override/template contained uppercase
+      url = url.replace(/\/[A-Z]{2}\//g, (m) => m.toLowerCase());
+      return wrapOut(base, url);
     }
 
+    // --------------------------------------------------------
+    // GoCity
+    // --------------------------------------------------------
     case "gocity":
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
 
+    // --------------------------------------------------------
+    // Elsewhere (non-TP-wrapped, ensure affiliate query present)
+    // --------------------------------------------------------
     case "elsewhere": {
-      // ✅ Not TP wrapped — direct Elsewhere affiliate tracking link
-      const url =
+      let url =
         rawTarget ||
-        `https://www.elsewhere.io/${mapping.country_slug}?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program`;
-      return { deep_link: url, rawTarget: url, encodedTarget: encodeURIComponent(url) };
+        `https://www.elsewhere.io/${mapping.country_slug || "unknown"}`;
+      if (!url.includes("sca_ref=")) {
+        url +=
+          "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate&utm_term=Exclusive-Affiliate-Program&utm_content=Exclusive-Affiliate-Program";
+      }
+      return {
+        deep_link: url,
+        rawTarget: url,
+        encodedTarget: encodeURIComponent(url),
+      };
     }
 
+    // --------------------------------------------------------
+    // Aviasales (flight search builder)
+    // --------------------------------------------------------
     case "aviasales": {
-      // ✅ Always ensure both origin & destination IATA codes exist
-      const originIata = (resolved.origin_code || "").slice(0, 3).toUpperCase() || "CAI";
+      const originIata = (resolved.origin_code || "")
+        .slice(0, 3)
+        .toUpperCase() || "CAI";
       const destIata =
-        (resolved.destination_code || "").slice(0, 3).toUpperCase() ||
+        (resolved.destination_code || "")
+          .slice(0, 3)
+          .toUpperCase() ||
         (mapping.iata_code || "").toUpperCase() ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "");
+        (mapping.city_slug
+          ? mapping.city_slug.slice(0, 3).toUpperCase()
+          : "");
       const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
       const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
       return wrapOut(base, aviasalesUrl);
     }
 
+    // --------------------------------------------------------
+    // Default fallback
+    // --------------------------------------------------------
     default:
       return wrapOut(base, rawTarget || template || base);
   }
 
-  // ✅ Close helper
+  // --------------------------------------------------------
+  // Internal helper for TP-wrapped partners
+  // --------------------------------------------------------
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);
     const deep_link = wrapTpLink(b, target);
     return { deep_link, rawTarget: target, encodedTarget: encoded };
   }
-} 
+}
 
 // ----------------------------------------------------------
 // Main handler
 // ----------------------------------------------------------
+
 exports.handler = async function (event) {
   console.log("🚀 Starting generateAffiliateLinks_v3");
 

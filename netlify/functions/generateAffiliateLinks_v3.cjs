@@ -292,7 +292,7 @@ async function insertGeneratedLinkWithRetry(payload, { debug = false } = {}) {
 }
 
 // ----------------------------------------------------------
-// Deep link builder (patched)
+// Deep link builder (patched & finalized)
 // ----------------------------------------------------------
 function buildDeepLink(partner, mapping, extras, context = {}) {
   const base = partner.base_url || "";
@@ -337,15 +337,48 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
 
   switch (partner.partner_code) {
     case "booking_stays":
-      return wrapOut(base, rawTarget || `https://www.booking.com/searchresults.html?ss=${mapping.city_slug}`);
+      return wrapOut(
+        base,
+        rawTarget ||
+          `https://www.booking.com/searchresults.html?ss=${mapping.city_slug},+${mapping.country_slug || mapping.country_code || ""}`
+      );
+
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
-    case "booking_attractions":
-      return wrapOut(base, rawTarget || `https://www.booking.com/attractions/searchresults/${mapping.country_code}/${mapping.city_slug}.html`);
+
+    case "booking_attractions": {
+      // Fix double slashes and missing country
+      const countryPart = mapping.country_code || mapping.country_slug || "xx";
+      return wrapOut(
+        base,
+        rawTarget ||
+          `https://www.booking.com/attractions/searchresults/${countryPart}/${mapping.city_slug}.html`
+      );
+    }
+
     case "gocity":
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
+
     case "elsewhere":
-      return wrapOut(base, rawTarget || `https://www.elsewhere.io/${mapping.country_slug}`);
+      // Ensure proper TP wrapping for tracking
+      return wrapOut(
+        base,
+        rawTarget || `https://www.elsewhere.io/${mapping.country_slug}`
+      );
+
+    case "aviasales": {
+      // Always ensure both origin & destination IATA codes exist
+      const originIata =
+        (resolved.origin_code || "").slice(0, 3).toUpperCase() || "CAI";
+      const destIata =
+        (resolved.destination_code || "").slice(0, 3).toUpperCase() ||
+        (mapping.iata_code || "").toUpperCase() ||
+        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "");
+      const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
+      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
+      return wrapOut(base, aviasalesUrl);
+    }
+
     default:
       return wrapOut(base, rawTarget || template || base);
   }

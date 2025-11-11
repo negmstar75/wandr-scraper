@@ -409,7 +409,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
 }
 
 // ----------------------------------------------------------
-// Main handler
+// Main handler (with dynamic fallback & smart default origin)
 // ----------------------------------------------------------
 
 exports.handler = async function (event) {
@@ -423,6 +423,7 @@ exports.handler = async function (event) {
     origin_code: req_origin_code,
     origin_city: req_origin_city,
     origin: req_origin,
+    fallbackCities = [], // optional list of city_slugs to auto-inject if no mapping found
   } = body;
 
   console.log(
@@ -430,6 +431,7 @@ exports.handler = async function (event) {
   );
 
   const generation_id = uuidv4();
+
   try {
     await supabase.from("data_generations").insert([
       {
@@ -447,6 +449,20 @@ exports.handler = async function (event) {
   const previewLinks = [];
   let totalCount = 0;
 
+  // ----------------------------------------------------------
+  // Helper: Choose smart default origin (extendable via GeoIP)
+  // ----------------------------------------------------------
+  function getFallbackOrigin() {
+    if (req_origin_code && req_origin_city) {
+      return { code: req_origin_code, city: req_origin_city };
+    }
+
+    const envDefaultCode = process.env.DEFAULT_ORIGIN_CODE || "LON";
+    const envDefaultCity = process.env.DEFAULT_ORIGIN_CITY || "London";
+
+    return { code: envDefaultCode, city: envDefaultCity };
+  }
+
   try {
     const affiliates = await getActiveAffiliates();
     const targetAffiliates = partners.length
@@ -463,12 +479,9 @@ exports.handler = async function (event) {
 
       let flightPreviews = [];
       if (
-        [
-          "aviasales",
-          "booking_kayak",
-          "expedia_flights",
-          "cheapoair",
-        ].includes(partner.partner_code)
+        ["aviasales", "booking_kayak", "expedia_flights", "cheapoair"].includes(
+          partner.partner_code
+        )
       ) {
         try {
           flightPreviews = await fetchFlightPreviews(partner.partner_code);
@@ -477,16 +490,38 @@ exports.handler = async function (event) {
         }
       }
 
-      const mappings = await getPartnerMappings(partner.partner_code);
+      let mappings = await getPartnerMappings(partner.partner_code);
       const sliced = limit > 0 ? mappings.slice(0, limit) : mappings;
 
-      for (const mappingRow of sliced) {
+      // ----------------------------------------------------------
+      // 🌍 Dynamic fallback injection (if mappings empty)
+      // ----------------------------------------------------------
+      if (sliced.length === 0 && fallbackCities.length > 0) {
+        const { code: defaultOriginCode, city: defaultOriginCity } = getFallbackOrigin();
+
+        const fallbackMappings = fallbackCities.map((slug) => ({
+          id: null,
+          city_slug: slug,
+          country_slug: slug.split("-")[0] || slug,
+          destination_city: slug,
+          origin_code: defaultOriginCode,
+          origin_city: defaultOriginCity,
+        }));
+
+        mappings = [...fallbackMappings];
+        console.log(
+          `⚙️ Injected ${fallbackMappings.length} fallback mappings for ${partner.partner_code} (default origin: ${defaultOriginCode}/${defaultOriginCity})`
+        );
+      }
+
+      for (const mappingRow of mappings) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
 
         try {
-          // TripAdvisor geo fallback
+          // 🧭 TripAdvisor geo fallback
           ensureTripadvisorGeoId(mapping);
+
           if (
             partner.partner_code.startsWith("tripadvisor_") &&
             !mapping.prefixed_geo_id &&
@@ -496,14 +531,17 @@ exports.handler = async function (event) {
             if (geo) {
               mapping.geo_id = geo.new_geo_id || mapping.geo_id;
               mapping.prefixed_geo_id =
-                geo.prefixed_geo_id || (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
+                geo.prefixed_geo_id ||
+                (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
               mapping.country_code = mapping.country_code || geo.country_code;
             }
           }
 
-          // origin fallback from flight previews (if partner uses origin)
+          // 🛫 Origin fallback from flight previews
           if (
-            ["aviasales", "expedia_flights", "booking_kayak", "cheapoair"].includes(partner.partner_code)
+            ["aviasales", "expedia_flights", "booking_kayak", "cheapoair"].includes(
+              partner.partner_code
+            )
           ) {
             if (!mapping.origin_code && flightPreviews[0]?.origin_code) {
               mapping.origin_code = flightPreviews[0].origin_code;
@@ -513,7 +551,7 @@ exports.handler = async function (event) {
             }
           }
 
-          // normalize mapping origin/destination names
+          // Normalize origin & destination fields
           if (mapping.origin_city) {
             mapping.origin_city = normalizePlaceName(mapping.origin_city);
             mapping.origin = mapping.origin || mapping.origin_city;
@@ -523,6 +561,10 @@ exports.handler = async function (event) {
           } else if (req_origin) {
             mapping.origin = normalizePlaceName(req_origin);
             mapping.origin_city = mapping.origin_city || mapping.origin;
+          } else {
+            const fb = getFallbackOrigin();
+            mapping.origin_code = mapping.origin_code || fb.code;
+            mapping.origin_city = mapping.origin_city || fb.city;
           }
 
           if (mapping.destination_city) {
@@ -543,24 +585,17 @@ exports.handler = async function (event) {
           const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =
             buildDeepLink(partner, mapping, extras, context);
 
-          const fallback = !mapping?.id;
-          const from_template = Boolean(partner.template_url && !mapping.override_url);
-
           if (debug) {
             partnerSummaries[partner.partner_code].examples.push({
               destination_slug,
               deep_link,
               raw_target,
-              fallback,
-              from_template,
             });
             previewLinks.push({
               partner: partner.partner_code,
               destination_slug,
               deep_link,
               raw_target,
-              fallback,
-              from_template,
             });
             partnerSummaries[partner.partner_code].success++;
             totalCount++;
@@ -578,8 +613,6 @@ exports.handler = async function (event) {
               encoded_target,
               base_url: partner.base_url,
               generation_id,
-              fallback,
-              from_template,
             },
             { debug }
           );
@@ -590,11 +623,8 @@ exports.handler = async function (event) {
             partnerSummaries[partner.partner_code].examples.push({
               destination_slug,
               deep_link,
-              fallback,
-              from_template,
             });
           }
-
           console.log(`✅ ${partner.partner_code} → ${destination_slug}`);
         } catch (err) {
           partnerSummaries[partner.partner_code].failed++;

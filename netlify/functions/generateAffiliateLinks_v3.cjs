@@ -352,9 +352,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
     case "booking_attractions": {
-      const countryPart = (mapping.country_code || mapping.country_slug || "xx").toLowerCase();
-      const url = rawTarget ||
-        `https://www.booking.com/attractions/searchresults/${countryPart}/${mapping.city_slug}.html`;
+      let url =
+        rawTarget ||
+        `https://www.booking.com/attractions/searchresults/${(mapping.country_code || mapping.country_slug || "xx").toLowerCase()}/${mapping.city_slug}.html`;
+      url = url.replace(/\/[A-Z]{2}\//g, (m) => m.toLowerCase());
       return wrapOut(base, url);
     }
 

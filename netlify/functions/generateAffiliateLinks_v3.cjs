@@ -503,6 +503,8 @@ exports.handler = async function (event) {
   );
 
   const generation_id = uuidv4();
+  // ✈️ Preload airport data once for local enrichment cache
+  const airportsCache = await preloadAirports();
 
   try {
     await supabase.from("data_generations").insert([
@@ -588,7 +590,7 @@ if (fallbackCities.length > 0) {
       mappings.push({
         id: null,
         city_slug: slug,
-        country_slug: slug.split("-")[0] || slug,
+        country_slug: null, // leave empty, will be filled via airport enrichment
         destination_city: slug,
         origin_code: defaultOriginCode,
         origin_city: defaultOriginCity,
@@ -607,12 +609,13 @@ if (fallbackCities.length > 0) {
       for (const mappingRow of mappings) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
-        // 🧭 Airport enrichment
-        try {
-          await enrichFromAirportView(mapping);
-        } catch (e) {
-          console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
-        }
+        // 🧭 Airport enrichment (local + view fallback)
+try {
+  enrichMappingWithAirports(mapping, airportsCache); // fast local enrichment
+  await enrichFromAirportView(mapping); // optional network fallback
+} catch (e) {
+  console.warn(`✈️ Airport enrichment failed for ${mapping.city_slug}:`, e.message);
+}
 
         try {
           // 🧭 TripAdvisor geo fallback

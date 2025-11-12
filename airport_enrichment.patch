@@ -42,19 +42,7 @@ index 9f1d3ab..c3b8a21 100644
  // ----------------------------------------------------------
  // DB insert/upsert
  // ----------------------------------------------------------
-@@ -515,6 +547,11 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
-   }
- 
-   const rawTarget = mapping.override_url
-+    // Ensure mapping is enriched before template substitution
-+    ? applyTemplate(mapping.override_url, mapping, extras, resolved)
-+    : applyTemplate(template, mapping, extras, resolved);
-+
-+  // fallback country & IATA if missing
-     ? applyTemplate(mapping.override_url, mapping, extras, resolved)
-     : applyTemplate(template, mapping, extras, resolved);
- 
-@@ -693,6 +730,12 @@ exports.handler = async function (event) {
+@@ -693,6 +725,12 @@ exports.handler = async function (event) {
          const mapping = { ...mappingRow };
          const destination_slug = mapping.city_slug || mapping.country_slug || "none";
  

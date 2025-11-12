@@ -347,7 +347,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   const url = rawTarget ||
     `https://www.booking.com/searchresults.html?ss=${slug},+${countryPart}`;
   return wrapOut(base, url);
-}
+);
 
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);

@@ -341,23 +341,33 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     : applyTemplate(template, mapping, extras, resolved);
 
   switch (partner.partner_code) {
-    case "booking_stays":
-      return wrapOut(
-        base,
-        rawTarget ||
-          `https://www.booking.com/searchresults.html?ss=${mapping.city_slug},+${mapping.country_slug || mapping.country_code || ""}`
-      );
+    case "booking_stays": {
+  const slug = mapping.city_slug || mapping.destination_city || mapping.country_slug;
+  const countryPart = mapping.country_slug || mapping.country_code || "";
+  const url = rawTarget ||
+    `https://www.booking.com/searchresults.html?ss=${slug},+${countryPart}`;
+  return wrapOut(base, url);
+}
 
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
 
     case "booking_attractions": {
-      let url =
-        rawTarget ||
-        `https://www.booking.com/attractions/searchresults/${(mapping.country_code || mapping.country_slug || "xx").toLowerCase()}/${mapping.city_slug}.html`;
-      url = url.replace(/\/[A-Z]{2}\//g, (m) => m.toLowerCase());
-      return wrapOut(base, url);
-    }
+  // ✅ Force correct lowercase ISO code & fallback from known lookup map
+  const isoMap = {
+    madrid: "es",
+    berlin: "de",
+    amsterdam: "nl",
+    "cape-town": "za",
+    baku: "az",
+    reykjavik: "is",
+  };
+  const code =
+    (mapping.country_code || isoMap[mapping.city_slug?.toLowerCase()] || "xx")
+      .toLowerCase();
+  const url = `https://www.booking.com/attractions/searchresults/${code}/${mapping.city_slug}.html`;
+  return wrapOut(base, url);
+}
 
     case "gocity":
       return wrapOut(base, rawTarget || `https://gocity.com/en/${mapping.city_slug}`);
@@ -378,27 +388,30 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "aviasales": {
-      const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
-      let destIata =
-        (resolved.destination_code || "")
-          .slice(0, 3)
-          .toUpperCase() ||
-        (mapping.iata_code || "")
-          .slice(0, 3)
-          .toUpperCase() ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
+  const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
 
-      // ✅ ensure destIata always 3 letters
-      destIata = destIata.padEnd(3, "X").substring(0, 3);
+  // ✅ Correct special IATA cases and consistent fallback
+  const iataMap = {
+    "cape-town": "CPT",
+    reykjavik: "REK",
+    berlin: "BER",
+    madrid: "MAD",
+    amsterdam: "AMS",
+    baku: "GYD",
+  };
+  let destIata =
+    (resolved.destination_code ||
+      mapping.iata_code ||
+      iataMap[mapping.city_slug?.toLowerCase()] ||
+      mapping.city_slug?.slice(0, 3) ||
+      "XXX")
+      .toUpperCase()
+      .substring(0, 3);
 
-      const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
-      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
-      return wrapOut(base, aviasalesUrl);
-    }
-
-    default:
-      return wrapOut(base, rawTarget || template || base);
-  }
+  const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
+  const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
+  return wrapOut(base, aviasalesUrl);
+}
 
   // Helper: wrap target for TP
   function wrapOut(b, target) {

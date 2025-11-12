@@ -607,6 +607,12 @@ if (fallbackCities.length > 0) {
       for (const mappingRow of mappings) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
+        // 🧭 Airport enrichment
+        try {
+          await enrichFromAirportView(mapping);
+        } catch (e) {
+          console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
+        }
 
         try {
           // 🧭 TripAdvisor geo fallback
@@ -755,3 +761,34 @@ if (fallbackCities.length > 0) {
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };
+
+// ----------------------------------------------------------
+// Airport & city enrichment (via vw_airport_lookup)
+// ----------------------------------------------------------
+async function enrichFromAirportView(mapping) {
+  if (!mapping || !mapping.city_slug) return mapping;
+  try {
+    const { data, error } = await supabase
+      .from("vw_airport_lookup")
+      .select("iata, country_slug, country_iso2_upper")
+      .eq("city_slug", mapping.city_slug.toLowerCase())
+      .maybeSingle();
+
+    if (error) {
+      console.warn("✈️ vw_airport_lookup fetch error:", error.message);
+      return mapping;
+    }
+
+    if (data) {
+      mapping.destination_code =
+        mapping.destination_code || data.iata || mapping.destination_code;
+      mapping.country_slug =
+        mapping.country_slug || data.country_slug || mapping.country_slug;
+      mapping.country_code =
+        mapping.country_code || data.country_iso2_upper || mapping.country_code;
+    }
+  } catch (e) {
+    console.warn("✈️ enrichFromAirportView failed:", e.message);
+  }
+  return mapping;
+}

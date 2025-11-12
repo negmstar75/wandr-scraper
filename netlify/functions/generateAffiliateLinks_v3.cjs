@@ -466,15 +466,22 @@ exports.handler = async function (event) {
   // Helper: Choose smart default origin (extendable via GeoIP)
   // ----------------------------------------------------------
   function getFallbackOrigin() {
-    if (req_origin_code && req_origin_city) {
-      return { code: req_origin_code, city: req_origin_city };
-    }
-
-    const envDefaultCode = process.env.DEFAULT_ORIGIN_CODE || "LON";
-    const envDefaultCity = process.env.DEFAULT_ORIGIN_CITY || "London";
-
-    return { code: envDefaultCode, city: envDefaultCity };
+  // ✅ Prefer user-provided or geo-detected origin (if available)
+  if (req_origin_code && req_origin_city) {
+    return { code: req_origin_code, city: req_origin_city };
   }
+
+  // Try environment-configured default first
+  if (process.env.DEFAULT_ORIGIN_CODE && process.env.DEFAULT_ORIGIN_CITY) {
+    return {
+      code: process.env.DEFAULT_ORIGIN_CODE,
+      city: process.env.DEFAULT_ORIGIN_CITY,
+    };
+  }
+
+  // GeoIP or fallback mapping by continent could go here later
+  return { code: "LON", city: "London" };
+}
 
   try {
     const affiliates = await getActiveAffiliates();

@@ -341,13 +341,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     : applyTemplate(template, mapping, extras, resolved);
 
   switch (partner.partner_code) {
-    case "booking_stays": {
+  case "booking_stays": {
   const slug = mapping.city_slug || mapping.destination_city || mapping.country_slug;
   const countryPart = mapping.country_slug || mapping.country_code || "";
   const url = rawTarget ||
     `https://www.booking.com/searchresults.html?ss=${slug},+${countryPart}`;
   return wrapOut(base, url);
-);
+}
 
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
@@ -412,7 +412,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
   return wrapOut(base, aviasalesUrl);
 }
-
+}
   // Helper: wrap target for TP
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);

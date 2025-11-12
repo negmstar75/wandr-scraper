@@ -496,23 +496,34 @@ exports.handler = async function (event) {
       // ----------------------------------------------------------
       // 🌍 Dynamic fallback injection (if mappings empty)
       // ----------------------------------------------------------
-      if (sliced.length === 0 && fallbackCities.length > 0) {
-        const { code: defaultOriginCode, city: defaultOriginCity } = getFallbackOrigin();
+// 🌍 Dynamic fallback injection (per city check)
+if (fallbackCities.length > 0) {
+  const { code: defaultOriginCode, city: defaultOriginCity } = getFallbackOrigin();
+  let addedCount = 0;
 
-        const fallbackMappings = fallbackCities.map((slug) => ({
-          id: null,
-          city_slug: slug,
-          country_slug: slug.split("-")[0] || slug,
-          destination_city: slug,
-          origin_code: defaultOriginCode,
-          origin_city: defaultOriginCity,
-        }));
+  for (const slug of fallbackCities) {
+    const alreadyMapped = mappings.some(
+      (m) => m.city_slug && m.city_slug.toLowerCase() === slug.toLowerCase()
+    );
+    if (!alreadyMapped) {
+      mappings.push({
+        id: null,
+        city_slug: slug,
+        country_slug: slug.split("-")[0] || slug,
+        destination_city: slug,
+        origin_code: defaultOriginCode,
+        origin_city: defaultOriginCity,
+      });
+      addedCount++;
+    }
+  }
 
-        mappings = [...fallbackMappings];
-        console.log(
-          `⚙️ Injected ${fallbackMappings.length} fallback mappings for ${partner.partner_code} (default origin: ${defaultOriginCode}/${defaultOriginCity})`
-        );
-      }
+  if (addedCount > 0) {
+    console.log(
+      `⚙️ Injected ${addedCount} fallback cities for ${partner.partner_code} (default origin: ${defaultOriginCode}/${defaultOriginCity})`
+    );
+  }
+}
 
       for (const mappingRow of mappings) {
         const mapping = { ...mappingRow };

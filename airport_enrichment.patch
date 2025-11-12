@@ -1,0 +1,69 @@
+diff --git a/netlify/functions/generateAffiliateLinks_v3.cjs b/netlify/functions/generateAffiliateLinks_v3.cjs
+index 9f1d3ab..c3b8a21 100644
+--- a/netlify/functions/generateAffiliateLinks_v3.cjs
++++ b/netlify/functions/generateAffiliateLinks_v3.cjs
+@@ -348,6 +348,38 @@ async function fetchFlightPreviews(partnerCode) {
+   return data || [];
+ }
+ 
++// ----------------------------------------------------------
++// Airport & city enrichment (via vw_airport_lookup)
++// ----------------------------------------------------------
++async function enrichFromAirportView(mapping) {
++  if (!mapping || !mapping.city_slug) return mapping;
++  try {
++    const { data, error } = await supabase
++      .from("vw_airport_lookup")
++      .select("iata, country_slug, country_iso2_upper")
++      .eq("city_slug", mapping.city_slug.toLowerCase())
++      .maybeSingle();
++
++    if (error) {
++      console.warn("✈️ vw_airport_lookup fetch error:", error.message);
++      return mapping;
++    }
++
++    if (data) {
++      mapping.destination_code =
++        mapping.destination_code || data.iata || mapping.destination_code;
++      mapping.country_slug =
++        mapping.country_slug || data.country_slug || mapping.country_slug;
++      mapping.country_code =
++        mapping.country_code ||
++        data.country_iso2_upper ||
++        mapping.country_code;
++    }
++  } catch (e) {
++    console.warn("✈️ enrichFromAirportView failed:", e.message);
++  }
++  return mapping;
++}
++
+ // ----------------------------------------------------------
+ // DB insert/upsert
+ // ----------------------------------------------------------
+@@ -515,6 +547,11 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
+   }
+ 
+   const rawTarget = mapping.override_url
++    // Ensure mapping is enriched before template substitution
++    ? applyTemplate(mapping.override_url, mapping, extras, resolved)
++    : applyTemplate(template, mapping, extras, resolved);
++
++  // fallback country & IATA if missing
+     ? applyTemplate(mapping.override_url, mapping, extras, resolved)
+     : applyTemplate(template, mapping, extras, resolved);
+ 
+@@ -693,6 +730,12 @@ exports.handler = async function (event) {
+         const mapping = { ...mappingRow };
+         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
+ 
++        // 🧭 Airport enrichment
++        try {
++          await enrichFromAirportView(mapping);
++        } catch (e) {
++          console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
++        }
+         try {
+           // 🧭 TripAdvisor geo fallback
+           ensureTripadvisorGeoId(mapping);

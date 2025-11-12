@@ -297,6 +297,33 @@ function enrichMappingWithAirports(mapping, airportsMap) {
 }
 
 // ----------------------------------------------------------
+// Simple fallback resolvers (until full airport table join)
+// ----------------------------------------------------------
+function resolveIsoFromSlug(slug) {
+  const map = {
+    madrid: "ES",
+    berlin: "DE",
+    amsterdam: "NL",
+    "cape-town": "ZA",
+    baku: "AZ",
+    reykjavik: "IS",
+  };
+  return map[slug?.toLowerCase()] || null;
+}
+
+function resolveIataFromSlug(slug) {
+  const map = {
+    madrid: "MAD",
+    berlin: "BER",
+    amsterdam: "AMS",
+    "cape-town": "CPT",
+    baku: "GYD",
+    reykjavik: "REK",
+  };
+  return map[slug?.toLowerCase()] || null;
+}
+
+// ----------------------------------------------------------
 // DB insert/upsert
 // ----------------------------------------------------------
 async function insertGeneratedLink({

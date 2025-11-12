@@ -232,6 +232,69 @@ async function fetchFlightPreviews(partnerCode) {
     throw new Error(`Error fetching flight previews: ${error.message}`);
   return data || [];
 }
++// ----------------------------------------------------------
++// Airports preload & enrichment helpers
++// ----------------------------------------------------------
++
++async function preloadAirports() {
++  try {
++    const { data: rows, error } = await supabase
++      .from("airports")
++      .select("code, icao, name, city, city_code, country, latitude, longitude, time_zone")
++      .limit(10000);
++    if (error) {
++      console.warn("⚠️ Failed to preload airports:", error.message);
++      return { byCity: new Map(), byIata: new Map() };
++    }
++    const byCity = new Map();
++    const byIata = new Map();
++    for (const r of rows || []) {
++      const citySlug = (r.city || "").toLowerCase().replace(/\s+/g, "-");
++      if (citySlug && !byCity.has(citySlug)) byCity.set(citySlug, r);
++      if (r.code) byIata.set(r.code.toUpperCase(), r);
++    }
++    return { byCity, byIata };
++  } catch (err) {
++    console.warn("⚠️ Exception preloading airports:", err.message);
++    return { byCity: new Map(), byIata: new Map() };
++  }
++}
++
++function enrichMappingWithAirports(mapping, airportsMap) {
++  if (!mapping || !airportsMap) return mapping;
++  const { byCity, byIata } = airportsMap;
++  const citySlug = (mapping.city_slug || "").toLowerCase();
++
++  let airport = byCity.get(citySlug);
++  if (!airport && mapping.destination_code && mapping.destination_code.length === 3) {
++    airport = byIata.get(mapping.destination_code.toUpperCase());
++  }
++
++  if (airport) {
++    if (!mapping.country_code) {
++      if (airport.city_code && airport.city_code.length === 2)
++        mapping.country_code = airport.city_code.toUpperCase();
++      else if (airport.country && airport.country.length === 2)
++        mapping.country_code = airport.country.toUpperCase();
++    }
++    if (mapping.country_code && !mapping.country_code_small)
++      mapping.country_code_small = mapping.country_code.toLowerCase();
++
++    if (!mapping.destination_code && airport.code)
++      mapping.destination_code = airport.code.toUpperCase();
++
++    if (!mapping.iata_code && airport.code)
++      mapping.iata_code = airport.code.toUpperCase();
++
++    if (!mapping.destination_city && airport.city)
++      mapping.destination_city = airport.city;
++  }
++
++  if (!mapping.country_slug && mapping.country_code)
++    mapping.country_slug = mapping.country_code.toLowerCase();
++
++  return mapping;
++}
 
 // ----------------------------------------------------------
 // DB insert/upsert

@@ -512,12 +512,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
   return wrapOut(base, aviasalesUrl);
 }
-
-    default:
-      return wrapOut(base, rawTarget || template || base);
-  }
-
-  // TripAdvisor unified handler
+ // TripAdvisor unified handler
 case partner.partner_code.startsWith("tripadvisor_") ? partner.partner_code : null: {
   const type = partner.partner_code.replace("tripadvisor_", ""); 
   // supported: attractions, hotels, restaurants
@@ -552,6 +547,11 @@ case partner.partner_code.startsWith("tripadvisor_") ? partner.partner_code : nu
   return wrapOut(base, url);
 }
 
+    default:
+      return wrapOut(base, rawTarget || template || base);
+  }
+
+ 
   // Helper: wrap target for TP
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);

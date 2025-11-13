@@ -528,67 +528,90 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       };
     }
 
-    case "aviasales": {
-  const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
+        case "aviasales": {
+      const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
 
-  // ✅ Correct IATA using lookup map
-  const iataMap = {
-    "cape-town": "CPT",
-    reykjavik: "REK",
-    berlin: "BER",
-    madrid: "MAD",
-    amsterdam: "AMS",
-    baku: "GYD",
-  };
+      // ✅ Correct IATA using lookup map
+      const iataMap = {
+        "cape-town": "CPT",
+        reykjavik: "REK",
+        berlin: "BER",
+        madrid: "MAD",
+        amsterdam: "AMS",
+        baku: "GYD",
+      };
 
-  // Try mapping first, then enrichment
-  let destIata =
-    (iataMap[mapping.city_slug?.toLowerCase()] ||
-      resolved.destination_code ||
-      mapping.iata_code ||
-      resolveIataFromSlug(mapping.city_slug) ||
-      (mapping.city_slug ? mapping.city_slug.slice(0, 3) : "XXX"))
-      .toUpperCase()
-      .substring(0, 3);
+      // Try mapping first, then enrichment
+      let destIata =
+        (iataMap[mapping.city_slug?.toLowerCase()] ||
+          resolved.destination_code ||
+          mapping.iata_code ||
+          resolveIataFromSlug(mapping.city_slug) ||
+          (mapping.city_slug ? mapping.city_slug.slice(0, 3) : "XXX"))
+          .toUpperCase()
+          .substring(0, 3);
 
-  // ✅ Fallback to default origin only if no origin passed
-  const originFinal =
-    context.origin_code?.toUpperCase() ||
-    mapping.origin_code?.toUpperCase() ||
-    process.env.DEFAULT_ORIGIN_CODE ||
-    "LON";
+      // ✅ Fallback to default origin only if no origin passed
+      const originFinal =
+        context.origin_code?.toUpperCase() ||
+        mapping.origin_code?.toUpperCase() ||
+        process.env.DEFAULT_ORIGIN_CODE ||
+        "LON";
 
-  const flightPath = `${originFinal}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
-  const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
-  return wrapOut(base, aviasalesUrl);
-}
-// Unified TripAdvisor link builder
-if (partner.partner_code.startsWith("tripadvisor_")) {
-  const type = partner.partner_code.replace("tripadvisor_", "");
+      const flightPath = `${originFinal}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
+      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
+      return wrapOut(base, aviasalesUrl);
+    }
 
-  if (!mapping.prefixed_geo_id) {
-    // final fallback
-    const fallback = `https://www.tripadvisor.com/Search?q=${mapping.city_slug}`;
-    return wrapOut(base, fallback);
-  }
+    case "tripadvisor_attractions":
+    case "tripadvisor_hotels":
+    case "tripadvisor_restaurants": {
+      const type = partner.partner_code.replace("tripadvisor_", "");
+      const slug = mapping.city_slug;
 
-  let url;
-  switch (type) {
-    case "attractions":
-      url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${mapping.city_slug}.html`;
-      break;
-    case "hotels":
-      url = `https://www.tripadvisor.com/Hotels-${mapping.prefixed_geo_id}-Hotels-${mapping.city_slug}.html`;
-      break;
-    case "restaurants":
-      url = `https://www.tripadvisor.com/Restaurants-${mapping.prefixed_geo_id}-${mapping.city_slug}.html`;
-      break;
-    default:
-      url = `https://www.tripadvisor.com/Search?q=${mapping.city_slug}`;
-  }
+      let url;
 
-  return wrapOut(base, url);
-}
+      if (!mapping.prefixed_geo_id) {
+        // ❗ No geoId yet → still use category URLs without geo segment
+        switch (type) {
+          case "attractions":
+            url = `https://www.tripadvisor.com/Attractions--Activities-${slug}.html`;
+            break;
+
+          case "hotels":
+            url = `https://www.tripadvisor.com/Hotels--${slug}-Hotels.html`;
+            break;
+
+          case "restaurants":
+            url = `https://www.tripadvisor.com/Restaurants--${slug}.html`;
+            break;
+
+          default:
+            url = `https://www.tripadvisor.com/Search?q=${slug}`;
+        }
+      } else {
+        // Normal geo-based URLs
+        switch (type) {
+          case "attractions":
+            url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${slug}.html`;
+            break;
+
+          case "hotels":
+            url = `https://www.tripadvisor.com/Hotels-${mapping.prefixed_geo_id}-Hotels-${slug}.html`;
+            break;
+
+          case "restaurants":
+            url = `https://www.tripadvisor.com/Restaurants-${mapping.prefixed_geo_id}-${slug}.html`;
+            break;
+
+          default:
+            url = `https://www.tripadvisor.com/Search?q=${slug}`;
+        }
+      }
+
+      return wrapOut(base, url);
+    }
+
 
     default:
       return wrapOut(base, rawTarget || template || base);

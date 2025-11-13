@@ -1035,16 +1035,16 @@ async function enrichFromAirportView(mapping) {
     }
 
     if (data) {
-      mapping.destination_code =
-  mapping.destination_code || data.code || mapping.destination_code;
+  mapping.destination_code =
+    mapping.destination_code || data.code || mapping.destination_code;
+  mapping.country_slug =
+    mapping.country_slug || data.country_slug || mapping.country_slug;
+  mapping.country_code =
+    mapping.country_code || data.country_iso2_upper || mapping.country_code;
 
-mapping.iata_code =
-  mapping.iata_code || data.code || mapping.iata_code;
-      mapping.country_slug =
-        mapping.country_slug || data.country_slug || mapping.country_slug;
-      mapping.country_code =
-        mapping.country_code || data.country_iso2_upper || mapping.country_code;
-    }
+  mapping.iata_code =
+    mapping.iata_code || data.code || mapping.iata_code;
+}
   } catch (e) {
     console.warn("✈️ enrichFromAirportView failed:", e.message);
   }

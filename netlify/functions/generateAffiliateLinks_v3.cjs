@@ -221,8 +221,6 @@ async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
 
   return null;
 }
-  return data || null;
-}
 
 // ----------------------------------------------------------
 // Fetchers (Supabase)

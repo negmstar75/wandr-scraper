@@ -517,7 +517,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
-  case "tripadvisor_": {
+  case "tripadvisor_attractions": {
   // 1) Ensure prefixed_geo_id first
   ensureTripadvisorGeoId(mapping);
 

@@ -167,31 +167,60 @@ function wrapTpLink(baseUrl, targetUrl) {
 }
 
 // ----------------------------------------------------------
-// TripAdvisor geo helpers and fallback
+// TripAdvisor unified geoId resolver (uses DB only)
 // ----------------------------------------------------------
-function ensureTripadvisorGeoId(mapping) {
-  if (!mapping) return mapping;
-  if (mapping.prefixed_geo_id) return mapping;
-  const gid = mapping.geo_id || mapping.new_geo_id || mapping.newGeoId || null;
-  if (!gid) return mapping;
-  mapping.prefixed_geo_id =
-    /^[0-9]+$/.test(String(gid)) ? `g${gid}` : String(gid);
-  return mapping;
-}
+async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
+  if (!citySlug) return null;
 
-async function fetchGeoIdFromLog(city_slug, country_slug) {
-  if (!city_slug && !country_slug) return null;
-  const { data, error } = await supabase
+  // 1) Try geo_enrichment_log (city + country)
+  let { data: geo, error } = await supabase
     .from("geo_enrichment_log")
-    .select("new_geo_id, prefixed_geo_id, country_name, country_code")
-    .eq("city_slug", city_slug)
-    .eq("country_slug", country_slug)
+    .select("new_geo_id, prefixed_geo_id, country_code")
+    .eq("city_slug", citySlug)
+    .eq("country_slug", countrySlug)
     .maybeSingle();
 
-  if (error) {
-    console.warn("geo_enrichment_log lookup error:", error.message);
-    return null;
+  if (geo && geo.new_geo_id) {
+    return {
+      geo_id: geo.new_geo_id,
+      prefixed: geo.prefixed_geo_id || `g${geo.new_geo_id}`,
+      country_code: geo.country_code || null,
+    };
   }
+
+  // 2) Try geo_enrichment_log (city only)
+  const { data: geo2 } = await supabase
+    .from("geo_enrichment_log")
+    .select("new_geo_id, prefixed_geo_id, country_code")
+    .eq("city_slug", citySlug)
+    .maybeSingle();
+
+  if (geo2 && geo2.new_geo_id) {
+    return {
+      geo_id: geo2.new_geo_id,
+      prefixed: geo2.prefixed_geo_id || `g${geo2.new_geo_id}`,
+      country_code: geo2.country_code || null,
+    };
+  }
+
+  // 3) Try tripadvisor_cache (extract geoId from stored HTML)
+  const { data: cached } = await supabase
+    .from("tripadvisor_cache")
+    .select("response")
+    .eq("query", citySlug)
+    .maybeSingle();
+
+  if (cached?.response) {
+    const html = cached.response.html || "";
+    const match = html.match(/"geoId":(\d+)/);
+    if (match) {
+      const geoId = match[1];
+      return { geo_id: geoId, prefixed: `g${geoId}`, country_code: null };
+    }
+  }
+
+  return null;
+}
   return data || null;
 }
 
@@ -512,34 +541,27 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
   return wrapOut(base, aviasalesUrl);
 }
- // TripAdvisor unified handler
-case partner.partner_code.startsWith("tripadvisor_") ? partner.partner_code : null: {
-  const type = partner.partner_code.replace("tripadvisor_", ""); 
-  // supported: attractions, hotels, restaurants
+// Unified TripAdvisor link builder
+if (partner.partner_code.startsWith("tripadvisor_")) {
+  const type = partner.partner_code.replace("tripadvisor_", "");
 
-  // Require mapping.prefixed_geo_id (set earlier by the main handler)
   if (!mapping.prefixed_geo_id) {
-    // Fallback to a generic search URL (never breaks)
+    // final fallback
     const fallback = `https://www.tripadvisor.com/Search?q=${mapping.city_slug}`;
     return wrapOut(base, fallback);
   }
 
-  // Build correct deep link
   let url;
-
   switch (type) {
     case "attractions":
       url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${mapping.city_slug}.html`;
       break;
-
     case "hotels":
       url = `https://www.tripadvisor.com/Hotels-${mapping.prefixed_geo_id}-Hotels-${mapping.city_slug}.html`;
       break;
-
     case "restaurants":
       url = `https://www.tripadvisor.com/Restaurants-${mapping.prefixed_geo_id}-${mapping.city_slug}.html`;
       break;
-
     default:
       url = `https://www.tripadvisor.com/Search?q=${mapping.city_slug}`;
   }
@@ -728,28 +750,16 @@ if (
           // TripAdvisor geo fallback
 ensureTripadvisorGeoId(mapping);
 
-// First attempt: city + country
-if (
-  partner.partner_code.startsWith("tripadvisor_") &&
-  !mapping.prefixed_geo_id
-) {
-  let geo = await fetchGeoIdFromLog(mapping.city_slug, mapping.country_slug);
-
-  // Second attempt: city only (more flexible)
-  if (!geo) {
-    const { data } = await supabase
-      .from("geo_enrichment_log")
-      .select("new_geo_id, prefixed_geo_id, country_code")
-      .eq("city_slug", mapping.city_slug)
-      .maybeSingle();
-    geo = data || null;
-  }
+// TripAdvisor geo enrichment (DB-driven only)
+if (partner.partner_code.startsWith("tripadvisor_")) {
+  const geo = await resolveTripAdvisorGeo(
+    mapping.city_slug,
+    mapping.country_slug
+  );
 
   if (geo) {
-    mapping.geo_id = geo.new_geo_id || mapping.geo_id;
-    mapping.prefixed_geo_id =
-      geo.prefixed_geo_id ||
-      (geo.new_geo_id ? `g${geo.new_geo_id}` : mapping.prefixed_geo_id);
+    mapping.geo_id = geo.geo_id;
+    mapping.prefixed_geo_id = geo.prefixed;
     mapping.country_code = mapping.country_code || geo.country_code;
   }
 }

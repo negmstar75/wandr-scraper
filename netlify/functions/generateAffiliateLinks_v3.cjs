@@ -167,6 +167,29 @@ function wrapTpLink(baseUrl, targetUrl) {
 }
 
 // ----------------------------------------------------------
+// TripAdvisor geo helpers and fallback (REQUIRED FUNCTION)
+// ----------------------------------------------------------
+function ensureTripadvisorGeoId(mapping) {
+  if (!mapping) return mapping;
+
+  // already has prefixed form
+  if (mapping.prefixed_geo_id) return mapping;
+
+  const gid =
+    mapping.geo_id ||
+    mapping.new_geo_id ||
+    mapping.newGeoId ||
+    null;
+
+  if (!gid) return mapping;
+
+  mapping.prefixed_geo_id =
+    /^[0-9]+$/.test(String(gid)) ? `g${gid}` : String(gid);
+
+  return mapping;
+}
+
+// ----------------------------------------------------------
 // TripAdvisor unified geoId resolver (uses DB only)
 // ----------------------------------------------------------
 async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
@@ -918,7 +941,7 @@ async function enrichFromAirportView(mapping) {
   try {
     const { data, error } = await supabase
       .from("vw_airport_lookup")
-      .select("iata, country_slug, country_iso2_upper")
+      .select("code, country_slug, country_iso2_upper")
       .eq("city_slug", mapping.city_slug.toLowerCase())
       .maybeSingle();
 
@@ -929,7 +952,10 @@ async function enrichFromAirportView(mapping) {
 
     if (data) {
       mapping.destination_code =
-        mapping.destination_code || data.iata || mapping.destination_code;
+  mapping.destination_code || data.code || mapping.destination_code;
+
+mapping.iata_code =
+  mapping.iata_code || data.code || mapping.iata_code;
       mapping.country_slug =
         mapping.country_slug || data.country_slug || mapping.country_slug;
       mapping.country_code =

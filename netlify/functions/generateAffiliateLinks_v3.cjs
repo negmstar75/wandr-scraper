@@ -689,14 +689,41 @@ if (fallbackCities.length > 0) {
       for (const mappingRow of mappings) {
         const mapping = { ...mappingRow };
         const destination_slug = mapping.city_slug || mapping.country_slug || "none";
-        // 🧭 Airport enrichment (local + view fallback)
+        // 🧭 Airport enrichment
 try {
-  enrichMappingWithAirports(mapping, airportsCache); // fast local enrichment
-  await enrichFromAirportView(mapping); // optional network fallback
+    const isFallbackCity = mapping.id === null;
+
+    if (!isFallbackCity) {
+        // Full enrichment for normal partner_mappings rows
+        await enrichFromAirportView(mapping);
+    } else {
+        // Fallback city → enrich ONLY destination fields (never origin)
+        const enriched = await enrichFromAirportView({ ...mapping });
+
+        mapping.destination_code = mapping.destination_code || enriched.destination_code;
+        mapping.iata_code = mapping.iata_code || enriched.iata_code;
+        mapping.country_slug = mapping.country_slug || enriched.country_slug;
+        mapping.country_code = mapping.country_code || enriched.country_code;
+
+        // ❌ DO NOT allow enriched.origin_code or origin_city to overwrite the fallback origin
+        // Leave mapping.origin_code and mapping.origin_city exactly as previously set
+    }
 } catch (e) {
-  console.warn(`✈️ Airport enrichment failed for ${mapping.city_slug}:`, e.message);
+    console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
 }
 
+        // 🌍 TripAdvisor GEO enrichment for fallback cities (requires geoId)
+if (
+  partner.partner_code.startsWith("tripadvisor_") &&
+  !mapping.geo_id &&
+  mapping.city_slug
+) {
+  const geo = await fetchTripAdvisorGeoId(mapping.city_slug);
+  if (geo) {
+    mapping.geo_id = geo;
+    mapping.prefixed_geo_id = `g${geo}`;
+  }
+}
         try {
           // TripAdvisor geo fallback
 ensureTripadvisorGeoId(mapping);
@@ -855,6 +882,25 @@ if (
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
 };
+
+// ----------------------------------------------------------
+// TripAdvisor geoId fetcher (HTML-based lightweight)
+// ----------------------------------------------------------
+async function fetchTripAdvisorGeoId(citySlug) {
+  try {
+    const searchUrl = `https://www.tripadvisor.com/Search?q=${citySlug}`;
+    const res = await fetch(searchUrl);
+    const html = await res.text();
+
+    // TripAdvisor embeds: "geoId":123456
+    const match = html.match(/"geoId":(\d+)/);
+
+    if (match) return match[1];
+  } catch (e) {
+    console.warn("⚠️ TripAdvisor geoId fetch failed for", citySlug, e.message);
+  }
+  return null;
+}
 
 // ----------------------------------------------------------
 // Airport & city enrichment (via vw_airport_lookup)

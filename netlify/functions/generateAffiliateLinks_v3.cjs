@@ -437,14 +437,14 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
 
   switch (partner.partner_code) {
       case "booking_stays": {
-      // Use city slug and (optional) country_slug if present; do not fabricate a country slug.
-      const slug = mapping.city_slug || mapping.destination_city || "";
-      const countryPart = mapping.country_slug ? `,+${mapping.country_slug}` : "";
-      const url =
-        rawTarget ||
-        `https://www.booking.com/searchresults.html?ss=${slug}${countryPart}`;
-      return wrapOut(base, url);
-    }
+  const slug = mapping.city_slug || mapping.destination_city || "";
+  const countryPart = mapping.country_slug ? `,+${mapping.country_slug}` : "";
+  const baseTarget = `https://www.booking.com/searchresults.html?ss=${slug}${countryPart}`;
+
+  // ✅ Always wrap in base_url (TP link) even for new destinations
+  const url = rawTarget || baseTarget;
+  return wrapOut(base, url);
+}
 
     case "booking_cars":
       return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
@@ -479,21 +479,39 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "aviasales": {
-        const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
-      // ✅ Correct special IATA cases and consistent fallback
-      let destIata =
-        (resolved.destination_code ||
-          mapping.iata_code ||
-          resolveIataFromSlug(mapping.city_slug) ||
-          (mapping.city_slug ? mapping.city_slug.slice(0, 3) : "") ||
-          "XXX")
-          .toUpperCase()
-          .substring(0, 3);
+  const originIata = (resolved.origin_code || "CAI").slice(0, 3).toUpperCase();
 
-      const flightPath = `${originIata}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
-      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
-      return wrapOut(base, aviasalesUrl);
-    }
+  // ✅ Correct IATA using lookup map
+  const iataMap = {
+    "cape-town": "CPT",
+    reykjavik: "REK",
+    berlin: "BER",
+    madrid: "MAD",
+    amsterdam: "AMS",
+    baku: "GYD",
+  };
+
+  // Try mapping first, then enrichment
+  let destIata =
+    (iataMap[mapping.city_slug?.toLowerCase()] ||
+      resolved.destination_code ||
+      mapping.iata_code ||
+      resolveIataFromSlug(mapping.city_slug) ||
+      (mapping.city_slug ? mapping.city_slug.slice(0, 3) : "XXX"))
+      .toUpperCase()
+      .substring(0, 3);
+
+  // ✅ Fallback to default origin only if no origin passed
+  const originFinal =
+    context.origin_code?.toUpperCase() ||
+    mapping.origin_code?.toUpperCase() ||
+    process.env.DEFAULT_ORIGIN_CODE ||
+    "LON";
+
+  const flightPath = `${originFinal}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
+  const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
+  return wrapOut(base, aviasalesUrl);
+}
 
     default:
       return wrapOut(base, rawTarget || template || base);

@@ -190,9 +190,70 @@ function ensureTripadvisorGeoId(mapping) {
 }
 
 // ----------------------------------------------------------
+// TripAdvisor official API geoId fetcher (real API)
+// ----------------------------------------------------------
+async function fetchTripadvisorGeoApi(citySlug) {
+  try {
+    const apiKey = process.env.TRIPADVISOR_API_KEY;
+    if (!apiKey) return null;
+
+    const url = `https://api.tripadvisor.com/api/internal/1.14/location/search?query=${encodeURIComponent(
+      citySlug
+    )}&key=${apiKey}`;
+
+    const res = await fetch(url);
+    const json = await res.json();
+
+    if (!json?.data?.length) return null;
+
+    const loc = json.data[0];
+    const geoId = loc.location_id;
+
+    // Store into cache table
+    await supabase.from("tripadvisor_cache").upsert(
+      [
+        {
+          query: citySlug,
+          country_slug: loc.address_obj?.country_code?.toLowerCase() || null,
+          response: { html: null, json },
+        },
+      ],
+      { onConflict: "query,country_slug" }
+    );
+
+    // Store into geo_enrichment_log
+    await supabase.from("geo_enrichment_log").upsert(
+      [
+        {
+          city_slug: citySlug,
+          country_slug: loc.address_obj?.country_code?.toLowerCase() || null,
+          new_geo_id: geoId,
+          prefixed_geo_id: `g${geoId}`,
+          country_code: loc.address_obj?.country_code || null,
+        },
+      ],
+      { onConflict: "city_slug,country_slug" }
+    );
+
+    return {
+      geo_id: geoId,
+      prefixed: `g${geoId}`,
+      country_code: loc.address_obj?.country_code || null,
+    };
+  } catch (err) {
+    console.warn("⚠️ TripAdvisor API lookup failed:", err.message);
+    return null;
+  }
+}
+
+// ----------------------------------------------------------
 // TripAdvisor unified geoId resolver (uses DB only)
 // ----------------------------------------------------------
 async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
+    // 0) Try TripAdvisor API first (new destinations)
+  const apiGeo = await fetchTripadvisorGeoApi(citySlug);
+  if (apiGeo) return apiGeo;
+
   if (!citySlug) return null;
 
   // 1) Try geo_enrichment_log (city + country)

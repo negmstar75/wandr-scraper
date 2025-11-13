@@ -517,6 +517,34 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
+  case "tripadvisor_": {
+  // 1) Ensure prefixed_geo_id first
+  ensureTripadvisorGeoId(mapping);
+
+  // 2) If geo missing → fallback lookup by city_slug only
+  if (!mapping.prefixed_geo_id) {
+    const { data } = await supabase
+      .from("geo_enrichment_log")
+      .select("prefixed_geo_id, new_geo_id")
+      .eq("city_slug", mapping.city_slug)
+      .maybeSingle();
+
+    if (data?.prefixed_geo_id) {
+      mapping.prefixed_geo_id = data.prefixed_geo_id;
+    }
+  }
+
+  // 3) If STILL missing → fallback URL using search (works but is not ideal)
+  if (!mapping.prefixed_geo_id) {
+    const fallback = `https://www.tripadvisor.com/Search?q=${mapping.city_slug}`;
+    return wrapOut(base, fallback);
+  }
+
+  // 4) Standard correct Tripadvisor format
+  const url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${mapping.city_slug}.html`;
+  return wrapOut(base, url);
+}
+
   // Helper: wrap target for TP
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);

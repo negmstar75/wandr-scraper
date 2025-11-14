@@ -190,130 +190,65 @@ function ensureTripadvisorGeoId(mapping) {
 }
 
 // ----------------------------------------------------------
-// TripAdvisor official API geoId fetcher (real API)
-// ----------------------------------------------------------
-async function fetchTripadvisorGeoApi(citySlug) {
-  try {
-    const apiKey = process.env.TRIPADVISOR_API_KEY;
-    if (!apiKey) return null;
-
-    const url = `https://api.tripadvisor.com/api/internal/1.14/location/search?query=${encodeURIComponent(
-      citySlug
-    )}&key=${apiKey}`;
-
-    const res = await fetch(url);
-    const json = await res.json();
-
-    if (!json?.data?.length) return null;
-
-    const loc = json.data[0];
-    const geoId = loc.location_id;
-
-    // Store into cache table
-    await supabase.from("tripadvisor_cache").upsert(
-      [
-        {
-          query: citySlug,
-          country_slug: loc.address_obj?.country_code?.toLowerCase() || null,
-          response: { html: null, json },
-        },
-      ],
-      { onConflict: "query,country_slug" }
-    );
-
-    // Store into geo_enrichment_log
-    await supabase.from("geo_enrichment_log").upsert(
-      [
-        {
-          city_slug: citySlug,
-          country_slug: loc.address_obj?.country_code?.toLowerCase() || null,
-          new_geo_id: geoId,
-          prefixed_geo_id: `g${geoId}`,
-          country_code: loc.address_obj?.country_code || null,
-        },
-      ],
-      { onConflict: "city_slug,country_slug" }
-    );
-
-    return {
-      geo_id: geoId,
-      prefixed: `g${geoId}`,
-      country_code: loc.address_obj?.country_code || null,
-    };
-  } catch (err) {
-    console.warn("⚠️ TripAdvisor API lookup failed:", err.message);
-    return null;
-  }
-}
-
-// ----------------------------------------------------------
-// TripAdvisor unified geoId resolver (uses DB only)
+// TripAdvisor unified geoId resolver (cache → log → API → cache/log)
 // ----------------------------------------------------------
 async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
-    // 0) Try TripAdvisor API first (new destinations)
-  const apiGeo = await fetchTripadvisorGeoApi(citySlug);
-  if (apiGeo) return apiGeo;
-
   if (!citySlug) return null;
 
-  // 1) Try geo_enrichment_log (city + country)
-  let { data: geo, error } = await supabase
+  // 1️⃣ geo_enrichment_log (city+country)
+  let { data: geo1 } = await supabase
     .from("geo_enrichment_log")
     .select("new_geo_id, prefixed_geo_id, country_code")
     .eq("city_slug", citySlug)
     .eq("country_slug", countrySlug)
     .maybeSingle();
 
-  if (geo && geo.new_geo_id) {
+  if (geo1?.new_geo_id) {
     return {
-      geo_id: geo.new_geo_id,
-      prefixed: geo.prefixed_geo_id || `g${geo.new_geo_id}`,
-      country_code: geo.country_code || null,
+      geo_id: geo1.new_geo_id,
+      prefixed: geo1.prefixed_geo_id || `g${geo1.new_geo_id}`,
+      country_code: geo1.country_code || null
     };
   }
 
-  // 2) Try geo_enrichment_log (city only)
-  const { data: geo2 } = await supabase
+  // 2️⃣ geo_enrichment_log (city only)
+  let { data: geo2 } = await supabase
     .from("geo_enrichment_log")
     .select("new_geo_id, prefixed_geo_id, country_code")
     .eq("city_slug", citySlug)
     .maybeSingle();
 
-  if (geo2 && geo2.new_geo_id) {
+  if (geo2?.new_geo_id) {
     return {
       geo_id: geo2.new_geo_id,
       prefixed: geo2.prefixed_geo_id || `g${geo2.new_geo_id}`,
-      country_code: geo2.country_code || null,
+      country_code: geo2.country_code || null
     };
   }
 
-  // 3) Try tripadvisor_cache (extract geoId from stored HTML)
+  // 3️⃣ tripadvisor_cache (json-based)
   const { data: cached } = await supabase
     .from("tripadvisor_cache")
     .select("response")
     .eq("query", citySlug)
     .maybeSingle();
 
-  if (cached?.response) {
-    const html = cached.response.html || "";
-    const match = html.match(/"geoId":(\d+)/);
-    if (match) {
-      const geoId = match[1];
-      return { geo_id: geoId, prefixed: `g${geoId}`, country_code: null };
-    }
+  if (cached?.response?.json?.data?.length) {
+    const best = cached.response.json.data[0];
+    const geoId = best.location_id;
+
+    return {
+      geo_id: geoId,
+      prefixed: `g${geoId}`,
+      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null
+    };
   }
 
-  return null;
-}
+  // 4️⃣ FINAL – Official TripAdvisor API
+  const apiKey = process.env.TRIPADVISOR_API_KEY;
+  if (!apiKey) return null;
 
-// ----------------------------------------------------------
-// TripAdvisor API fallback (direct API call + caching)
-// ----------------------------------------------------------
-async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
   try {
-    const apiKey = process.env.TRIPADVISOR_API_KEY;
-    if (!apiKey) return null;
-
     const url =
       `https://api.content.tripadvisor.com/api/v1/location/search` +
       `?key=${apiKey}` +
@@ -323,21 +258,20 @@ async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
     const res = await fetch(url);
     const json = await res.json();
 
-    // No results?
     if (!json?.data?.length) return null;
 
     const best = json.data[0];
     const geoId = best.location_id;
 
-    // Insert cache
+    // 🔘 Cache write
     await supabase.from("tripadvisor_cache").upsert({
       query: citySlug,
       country_slug: countrySlug,
-      response: json,
+      response: { json },
       fetched_at: new Date().toISOString()
     });
 
-    // Insert log
+    // 🔘 Log write
     await supabase.from("geo_enrichment_log").upsert({
       city_slug: citySlug,
       country_slug: countrySlug,
@@ -352,7 +286,6 @@ async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
       prefixed: `g${geoId}`,
       country_code: best.address_obj?.countrycode?.toUpperCase?.() || null
     };
-
   } catch (err) {
     console.warn("⚠️ TripAdvisor API error:", err.message);
     return null;

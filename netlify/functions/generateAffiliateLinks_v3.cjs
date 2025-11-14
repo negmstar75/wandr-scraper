@@ -839,64 +839,87 @@ try {
     console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
 }
 
-        // 🌍 TripAdvisor GEO enrichment for fallback cities (requires geoId)
-if (
-  partner.partner_code.startsWith("tripadvisor_") &&
-  !mapping.geo_id &&
-  mapping.city_slug
-) {
-  const geo = await fetchTripAdvisorGeoId(mapping.city_slug);
-  if (geo) {
-    mapping.geo_id = geo;
-    mapping.prefixed_geo_id = `g${geo}`;
-  }
-}
-        try {
-          // TripAdvisor geo fallback
-ensureTripadvisorGeoId(mapping);
-
-          // ----------------------------------------------------------
-// 🔥 TripAdvisor API fallback (Edge Function) — ONLY when geo_id missing
+// 🌍 TripAdvisor GEO enrichment (unified)
 // ----------------------------------------------------------
-if (
-  partner.partner_code.startsWith("tripadvisor_") &&
-  !mapping.geo_id &&
-  !mapping.prefixed_geo_id &&
-  mapping.city_slug
-) {
-  try {
-    console.log(`🌍 Calling TripAdvisor API for ${mapping.city_slug}...`);
+if (partner.partner_code.startsWith("tripadvisor_")) {
 
-    const res = await fetch(
-      `${process.env.SUPABASE_URL}/functions/v1/enrich-geo-info`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-        },
-        body: JSON.stringify({
-          city_slug: mapping.city_slug,
-          country_slug: mapping.country_slug || null,
-        }),
-      }
-    );
+  // 1️⃣ Ensure prefixed geo_id (if mapping.geo_id already present)
+  ensureTripadvisorGeoId(mapping);
 
-    const txt = await res.text();
-    console.log("🌍 Edge Function response:", txt);
+  // 2️⃣ Try DB/cache resolver
+  let geo = await resolveTripAdvisorGeo(
+    mapping.city_slug,
+    mapping.country_slug
+  );
 
-    // Re-fetch enriched value from the DB
-    const refreshed = await resolveTripAdvisorGeo(
+  // 3️⃣ If still missing → call TripAdvisor API directly (fast, no Edge Function)
+  if (!geo && mapping.city_slug) {
+    geo = await fetchTripAdvisorGeo_API(
       mapping.city_slug,
       mapping.country_slug
     );
+  }
 
-    if (refreshed) {
-      mapping.geo_id = refreshed.geo_id;
-      mapping.prefixed_geo_id = refreshed.prefixed;
-      mapping.country_code = mapping.country_code || refreshed.country_code;
-    }
-  } catch (e) {
-    console.warn("⚠️ TripAdvisor API fallback call failed:", e.message);
+  // 4️⃣ Apply resolved GEO
+  if (geo) {
+    mapping.geo_id = geo.geo_id;
+    mapping.prefixed_geo_id = geo.prefixed;
+    mapping.country_code = mapping.country_code || geo.country_code;
+  } else {
+    console.warn(`⚠️ TripAdvisor geo unresolved for ${mapping.city_slug}`);
+  }
+}
+
+// ----------------------------------------------------------
+// TripAdvisor API fallback (direct API call + caching)
+// ----------------------------------------------------------
+async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
+  try {
+    const apiKey = process.env.TRIPADVISOR_API_KEY;
+    if (!apiKey) return null;
+
+    const url =
+      `https://api.content.tripadvisor.com/api/v1/location/search` +
+      `?key=${apiKey}` +
+      `&searchQuery=${encodeURIComponent(citySlug)}` +
+      `&category=geos`;
+
+    const res = await fetch(url);
+    const json = await res.json();
+
+    // No results?
+    if (!json?.data?.length) return null;
+
+    const best = json.data[0];
+    const geoId = best.location_id;
+
+    // Insert cache
+    await supabase.from("tripadvisor_cache").upsert({
+      query: citySlug,
+      country_slug: countrySlug,
+      response: json,
+      fetched_at: new Date().toISOString()
+    });
+
+    // Insert log
+    await supabase.from("geo_enrichment_log").upsert({
+      city_slug: citySlug,
+      country_slug: countrySlug,
+      new_geo_id: geoId,
+      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null,
+      prefixed_geo_id: `g${geoId}`,
+      updated_at: new Date().toISOString()
+    });
+
+    return {
+      geo_id: geoId,
+      prefixed: `g${geoId}`,
+      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null
+    };
+
+  } catch (err) {
+    console.warn("⚠️ TripAdvisor API error:", err.message);
+    return null;
   }
 }
 

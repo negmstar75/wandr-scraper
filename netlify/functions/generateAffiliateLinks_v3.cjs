@@ -855,6 +855,51 @@ if (
           // TripAdvisor geo fallback
 ensureTripadvisorGeoId(mapping);
 
+          // ----------------------------------------------------------
+// 🔥 TripAdvisor API fallback (Edge Function) — ONLY when geo_id missing
+// ----------------------------------------------------------
+if (
+  partner.partner_code.startsWith("tripadvisor_") &&
+  !mapping.geo_id &&
+  !mapping.prefixed_geo_id &&
+  mapping.city_slug
+) {
+  try {
+    console.log(`🌍 Calling TripAdvisor API for ${mapping.city_slug}...`);
+
+    const res = await fetch(
+      `${process.env.SUPABASE_URL}/functions/v1/enrich-geo-info`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+        body: JSON.stringify({
+          city_slug: mapping.city_slug,
+          country_slug: mapping.country_slug || null,
+        }),
+      }
+    );
+
+    const txt = await res.text();
+    console.log("🌍 Edge Function response:", txt);
+
+    // Re-fetch enriched value from the DB
+    const refreshed = await resolveTripAdvisorGeo(
+      mapping.city_slug,
+      mapping.country_slug
+    );
+
+    if (refreshed) {
+      mapping.geo_id = refreshed.geo_id;
+      mapping.prefixed_geo_id = refreshed.prefixed;
+      mapping.country_code = mapping.country_code || refreshed.country_code;
+    }
+  } catch (e) {
+    console.warn("⚠️ TripAdvisor API fallback call failed:", e.message);
+  }
+}
+
 // TripAdvisor geo enrichment (DB-driven only)
 if (partner.partner_code.startsWith("tripadvisor_")) {
   const geo = await resolveTripAdvisorGeo(

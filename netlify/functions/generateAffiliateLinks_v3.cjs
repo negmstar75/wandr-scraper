@@ -1022,10 +1022,11 @@ async function fetchTripAdvisorGeoId(citySlug) {
 // ----------------------------------------------------------
 async function enrichFromAirportView(mapping) {
   if (!mapping || !mapping.city_slug) return mapping;
+
   try {
     const { data, error } = await supabase
       .from("vw_airport_lookup")
-      .select("code, country_slug, country_iso2_upper")
+      .select("iata_code, country_slug, country_code")
       .eq("city_slug", mapping.city_slug.toLowerCase())
       .maybeSingle();
 
@@ -1035,18 +1036,22 @@ async function enrichFromAirportView(mapping) {
     }
 
     if (data) {
-  mapping.destination_code =
-    mapping.destination_code || data.code || mapping.destination_code;
-  mapping.country_slug =
-    mapping.country_slug || data.country_slug || mapping.country_slug;
-  mapping.country_code =
-    mapping.country_code || data.country_iso2_upper || mapping.country_code;
+      mapping.destination_code =
+        mapping.destination_code || data.iata_code || mapping.destination_code;
 
-  mapping.iata_code =
-    mapping.iata_code || data.code || mapping.iata_code;
-}
+      mapping.iata_code =
+        mapping.iata_code || data.iata_code || mapping.iata_code;
+
+      mapping.country_slug =
+        mapping.country_slug || data.country_slug || mapping.country_slug;
+
+      mapping.country_code =
+        mapping.country_code || data.country_code || mapping.country_code;
+    }
   } catch (e) {
     console.warn("✈️ enrichFromAirportView failed:", e.message);
   }
+
   return mapping;
 }
+

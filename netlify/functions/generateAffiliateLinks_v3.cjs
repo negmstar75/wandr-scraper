@@ -838,15 +838,7 @@ if (partner.partner_code.startsWith("tripadvisor_")) {
     mapping.country_slug
   );
 
-  // 3️⃣ If still missing → call TripAdvisor API directly (fast, no Edge Function)
-  if (!geo && mapping.city_slug) {
-    geo = await fetchTripAdvisorGeo_API(
-      mapping.city_slug,
-      mapping.country_slug
-    );
-  }
-
-  // 4️⃣ Apply resolved GEO
+  // 3️⃣ Apply resolved GEO
   if (geo) {
     mapping.geo_id = geo.geo_id;
     mapping.prefixed_geo_id = geo.prefixed;

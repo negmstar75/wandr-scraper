@@ -307,6 +307,59 @@ async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
 }
 
 // ----------------------------------------------------------
+// TripAdvisor API fallback (direct API call + caching)
+// ----------------------------------------------------------
+async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
+  try {
+    const apiKey = process.env.TRIPADVISOR_API_KEY;
+    if (!apiKey) return null;
+
+    const url =
+      `https://api.content.tripadvisor.com/api/v1/location/search` +
+      `?key=${apiKey}` +
+      `&searchQuery=${encodeURIComponent(citySlug)}` +
+      `&category=geos`;
+
+    const res = await fetch(url);
+    const json = await res.json();
+
+    // No results?
+    if (!json?.data?.length) return null;
+
+    const best = json.data[0];
+    const geoId = best.location_id;
+
+    // Insert cache
+    await supabase.from("tripadvisor_cache").upsert({
+      query: citySlug,
+      country_slug: countrySlug,
+      response: json,
+      fetched_at: new Date().toISOString()
+    });
+
+    // Insert log
+    await supabase.from("geo_enrichment_log").upsert({
+      city_slug: citySlug,
+      country_slug: countrySlug,
+      new_geo_id: geoId,
+      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null,
+      prefixed_geo_id: `g${geoId}`,
+      updated_at: new Date().toISOString()
+    });
+
+    return {
+      geo_id: geoId,
+      prefixed: `g${geoId}`,
+      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null
+    };
+
+  } catch (err) {
+    console.warn("⚠️ TripAdvisor API error:", err.message);
+    return null;
+  }
+}
+
+// ----------------------------------------------------------
 // Fetchers (Supabase)
 // ----------------------------------------------------------
 async function getActiveAffiliates() {
@@ -867,59 +920,6 @@ if (partner.partner_code.startsWith("tripadvisor_")) {
     mapping.country_code = mapping.country_code || geo.country_code;
   } else {
     console.warn(`⚠️ TripAdvisor geo unresolved for ${mapping.city_slug}`);
-  }
-}
-
-// ----------------------------------------------------------
-// TripAdvisor API fallback (direct API call + caching)
-// ----------------------------------------------------------
-async function fetchTripAdvisorGeo_API(citySlug, countrySlug = null) {
-  try {
-    const apiKey = process.env.TRIPADVISOR_API_KEY;
-    if (!apiKey) return null;
-
-    const url =
-      `https://api.content.tripadvisor.com/api/v1/location/search` +
-      `?key=${apiKey}` +
-      `&searchQuery=${encodeURIComponent(citySlug)}` +
-      `&category=geos`;
-
-    const res = await fetch(url);
-    const json = await res.json();
-
-    // No results?
-    if (!json?.data?.length) return null;
-
-    const best = json.data[0];
-    const geoId = best.location_id;
-
-    // Insert cache
-    await supabase.from("tripadvisor_cache").upsert({
-      query: citySlug,
-      country_slug: countrySlug,
-      response: json,
-      fetched_at: new Date().toISOString()
-    });
-
-    // Insert log
-    await supabase.from("geo_enrichment_log").upsert({
-      city_slug: citySlug,
-      country_slug: countrySlug,
-      new_geo_id: geoId,
-      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null,
-      prefixed_geo_id: `g${geoId}`,
-      updated_at: new Date().toISOString()
-    });
-
-    return {
-      geo_id: geoId,
-      prefixed: `g${geoId}`,
-      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null
-    };
-
-  } catch (err) {
-    console.warn("⚠️ TripAdvisor API error:", err.message);
-    return null;
   }
 }
 

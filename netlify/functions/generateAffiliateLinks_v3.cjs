@@ -574,44 +574,45 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "gocity": {
-      if (!mapping.city_slug) {
-        return wrapOut(base, base || "https://gocity.com/");
-      }
-      const url = `https://gocity.com/en/${mapping.city_slug}`;
-      return wrapOut(base, url);
-    }
+  // Only allow cities that exist in partner_mappings
+  if (!mapping.id) {
+    // fallback city → GoCity doesn't support → return base only
+    return wrapOut(base, base || "https://gocity.com/");
+  }
+
+  const url = `https://gocity.com/en/${mapping.city_slug}`;
+  return wrapOut(base, url);
+}
 
     case "elsewhere": {
-      const country = mapping.country_slug;
-      if (!country) {
-        return wrapOut(base, base || "https://www.elsewhere.io/");
-      }
+  if (!mapping.id) {
+    // Not in partner_mappings → return base wrapped only
+    return wrapOut(base, base || "https://www.elsewhere.io/");
+  }
 
-      const urlBase = `https://www.elsewhere.io/${country}`;
-      const tracking =
-        "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate";
+  const urlBase = `https://www.elsewhere.io/${mapping.country_slug}`;
+  const tracking =
+    "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate";
 
-      const deep = urlBase.includes("sca_ref=") ? urlBase : urlBase + tracking;
-      return wrapOut(base, deep);
-    }
+  return wrapOut(base, urlBase + tracking);
+}
 
     case "lonelyplanet": {
-      const country = mapping.country_slug;
-      const slug = mapping.city_slug;
+  // if mapping.id null → unsupported destination
+  if (!mapping.id) {
+    return wrapOut(base, base || "https://www.lonelyplanet.com/");
+  }
 
-      if (!country || !slug) {
-        return wrapOut(base, base || "https://www.lonelyplanet.com/");
-      }
+  const alias = {
+    baku: "baku-baki",
+  };
 
-      const lp_alias = {
-        baku: "baku-baki",
-      };
+  const country = mapping.country_slug;
+  const city = alias[mapping.city_slug] || mapping.city_slug;
 
-      const cityPart = lp_alias[slug] || slug;
-
-      const url = `https://www.lonelyplanet.com/destinations/${country}/${cityPart}`;
-      return wrapOut(base, url);
-    }
+  const url = `https://www.lonelyplanet.com/destinations/${country}/${city}`;
+  return wrapOut(base, url);
+}
 
     case "aviasales": {
       const iataMap = {

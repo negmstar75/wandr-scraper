@@ -598,11 +598,12 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
 }
 
     case "lonelyplanet": {
-  // if mapping.id null → unsupported destination
+  // Unsupported dest → return base only
   if (!mapping.id) {
-    return wrapOut(base, base || "https://www.lonelyplanet.com/");
+    return wrapOut(base, "https://www.lonelyplanet.com/");
   }
 
+  // City aliases
   const alias = {
     baku: "baku-baki",
   };
@@ -610,10 +611,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   const country = mapping.country_slug;
   const city = alias[mapping.city_slug] || mapping.city_slug;
 
-  const url = `https://www.lonelyplanet.com/destinations/${country}/${city}`;
-  return wrapOut(base, url);
-}
+  // IMPORTANT: raw target must NOT include sca_ref parameters
+  const target = `https://www.lonelyplanet.com/destinations/${country}/${city}`;
 
+  // Now wrap it cleanly
+  return wrapOut(base, target);
+}
+      
     case "aviasales": {
       const iataMap = {
         "cape-town": "CPT",

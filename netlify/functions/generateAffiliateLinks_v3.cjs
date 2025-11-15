@@ -689,7 +689,13 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
   const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
-  return wrapOut(base, url);
+
+  // ❗ Kayak forbids affiliate redirect wrapping → return direct
+  return {
+    deep_link: url,
+    rawTarget: url,
+    encodedTarget: encodeURIComponent(url),
+  };
 }
 
     case "tripadvisor_attractions":

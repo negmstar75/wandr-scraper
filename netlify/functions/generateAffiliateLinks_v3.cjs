@@ -669,28 +669,28 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "booking_kayak": {
-      const originIata = (mapping.origin_code || context.origin_code || "LON")
-        .slice(0, 3)
-        .toUpperCase();
+  const originIata = (mapping.origin_code || context.origin_code || "LON")
+    .slice(0, 3)
+    .toUpperCase();
 
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-      };
+  const iataMap = {
+    "cape-town": "CPT",
+    reykjavik: "REK",
+    berlin: "BER",
+    madrid: "MAD",
+    amsterdam: "AMS",
+    baku: "GYD",
+  };
 
-      let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
+  const destIata =
+    iataMap[mapping.city_slug?.toLowerCase()] ||
+    mapping.iata_code ||
+    resolveIataFromSlug(mapping.city_slug) ||
+    (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
-      const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
-      return wrapOut(base, url);
-    }
+  const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
+  return wrapOut(base, url);
+}
 
     case "tripadvisor_attractions":
     case "tripadvisor_hotels":

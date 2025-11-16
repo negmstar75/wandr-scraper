@@ -4,10 +4,8 @@
  * Centralized enrichment pipeline for destination mappings.
  * - Airport/IATA/ISO fallback (vw_airport_lookup + static maps)
  * - TripAdvisor geoId resolver (log → cache → API) + ensure prefixed id
- * - Country slug fallback for partners that require both city + country
+ * - Country slug normalization via iso_countries (alpha2 → long slug)
  * - Origin default fallback for flight partners
- *
- * Note: This module is self-contained. It does NOT rely on helpers in other files.
  */
 
 const { createClient } = require("@supabase/supabase-js");
@@ -18,7 +16,20 @@ const supabase = createClient(
 );
 
 // ----------------------------------------------------------
-// 🔧 Static ISO / IATA / Country helpers (extend liberally)
+// 🧰 Small utils
+// ----------------------------------------------------------
+function slugifyCountryName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+}
+
+// ----------------------------------------------------------
+// 🔧 Static ISO / IATA / Country helpers (extend as needed)
 // ----------------------------------------------------------
 function resolveIsoFromSlug(slug) {
   const map = {
@@ -112,8 +123,48 @@ async function enrichFromAirportView(mapping) {
 }
 
 // ----------------------------------------------------------
+// 🌍 iso_countries helpers (normalize codes → names → slugs)
+// ----------------------------------------------------------
+async function getCountryByAlpha2(alpha2) {
+  if (!alpha2) return null;
+  const { data, error } = await supabase
+    .from("iso_countries")
+    .select("name, alpha2")
+    .ilike("alpha2", alpha2);
+  if (error) {
+    console.warn("iso_countries alpha2 lookup error:", error.message);
+    return null;
+  }
+  return data?.[0] || null;
+}
+
+async function getCountryByName(name) {
+  if (!name) return null;
+  // Try exact first, then ilike
+  let { data, error } = await supabase
+    .from("iso_countries")
+    .select("name, alpha2")
+    .eq("name", name)
+    .limit(1);
+  if (error) {
+    console.warn("iso_countries name exact error:", error.message);
+  }
+  if (!data || !data.length) {
+    const res = await supabase
+      .from("iso_countries")
+      .select("name, alpha2")
+      .ilike("name", name);
+    if (res.error) {
+      console.warn("iso_countries name ilike error:", res.error.message);
+      return null;
+    }
+    return res.data?.[0] || null;
+  }
+  return data[0] || null;
+}
+
+// ----------------------------------------------------------
 // 🌍 TripAdvisor geoId resolver (log → cache → API → cache/log)
-// Mirrors the previously working in-function logic.
 // ----------------------------------------------------------
 async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
   if (!citySlug) return null;
@@ -234,7 +285,7 @@ async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
 }
 
 // ----------------------------------------------------------
-// 🧠 Unified enrichment orchestrator (used by main function)
+// 🧠 Unified enrichment orchestrator
 // ----------------------------------------------------------
 async function enrichMapping(mapping, { partner_code = "", originFallback = {} } = {}) {
   if (!mapping) return mapping;
@@ -247,7 +298,7 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.destination_city = mapping.city_slug;
   }
 
-  // ✈️ Airport enrichment (handles IATA + country info)
+  // ✈️ Airport enrichment
   const isFallback = !mapping.id;
   if (!isFallback) {
     mapping = await enrichFromAirportView(mapping);
@@ -259,7 +310,45 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.country_code ||= enriched?.country_code;
   }
 
-  // 🌍 TripAdvisor enrichment for TA partners (prefixed geo id is key)
+  // 🏷 ISO/IATA/Country slug minimal fallbacks
+  mapping.country_code ||= resolveIsoFromSlug(mapping.city_slug);
+  mapping.iata_code ||= resolveIataFromSlug(mapping.city_slug);
+  mapping.country_slug ||= resolveCountrySlugFromCity(mapping.city_slug);
+
+  // 🌍 Normalize country_slug to a full name-based slug (NOT alpha2).
+  try {
+    // Case A: country_slug is alpha2 → convert to long slug via iso_countries
+    if (mapping.country_slug && mapping.country_slug.length === 2) {
+      const c = await getCountryByAlpha2(mapping.country_slug.toUpperCase());
+      if (c?.name) {
+        mapping.country_slug = slugifyCountryName(c.name);
+        mapping.country_code = c.alpha2?.toUpperCase() || mapping.country_code;
+      }
+    }
+
+    // Case B: have country_code but empty country_slug → fill slug via iso_countries
+    if (!mapping.country_slug && mapping.country_code && mapping.country_code.length === 2) {
+      const c = await getCountryByAlpha2(mapping.country_code.toUpperCase());
+      if (c?.name) {
+        mapping.country_slug = slugifyCountryName(c.name);
+      }
+    }
+
+    // Case C: have non-empty country_slug but no country_code → try lookup by name
+    if (mapping.country_slug && mapping.country_slug.length > 2 && !mapping.country_code) {
+      // attempt de-slug to name for lookup
+      const guessName = mapping.country_slug.replace(/-/g, " ");
+      const c = await getCountryByName(guessName);
+      if (c?.alpha2) {
+        mapping.country_code = c.alpha2.toUpperCase();
+        mapping.country_slug = slugifyCountryName(c.name);
+      }
+    }
+  } catch (err) {
+    console.warn("country normalization warning:", err.message);
+  }
+
+  // 🌍 TripAdvisor enrichment for TA partners
   if (partner_code.startsWith("tripadvisor_")) {
     ensureTripadvisorGeoId(mapping);
     const geo = await resolveTripAdvisorGeo(mapping.city_slug, mapping.country_slug);
@@ -272,11 +361,6 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     }
   }
 
-  // 🏷 ISO/IATA/Country slug fallbacks
-  mapping.country_code ||= resolveIsoFromSlug(mapping.city_slug);
-  mapping.iata_code ||= resolveIataFromSlug(mapping.city_slug);
-  mapping.country_slug ||= resolveCountrySlugFromCity(mapping.city_slug);
-
   // 🛫 Origin defaults (kept for flight partners consistency)
   mapping.origin_code ||= originFallback.code || process.env.DEFAULT_ORIGIN_CODE || "LON";
   mapping.origin_city ||= originFallback.city || process.env.DEFAULT_ORIGIN_CITY || "London";
@@ -285,10 +369,8 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
 }
 
 module.exports = {
-  // main orchestrator
   enrichMapping,
-
-  // exported in case main wants to reuse or test them
+  // also exported for testing/usage
   resolveIsoFromSlug,
   resolveIataFromSlug,
   resolveCountrySlugFromCity,

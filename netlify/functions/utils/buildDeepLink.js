@@ -2,10 +2,10 @@
  * utils/buildDeepLink.js
  * ----------------------------------------------------------
  * Deep-link builder for all partners.
- * - Robust flight defaults (never "undefined" dates)
- * - Strong IATA derivation (prevents "CIR" etc.)
- * - Correct TripAdvisor / Lonely Planet formats
- * - Expedia Flights explicit builder (matches your known-good format)
+ * - No fake IATA slicing (prevents "CIR")
+ * - Keeps robust dates defaults
+ * - Correct TA / LP structures
+ * - Expedia Flights explicit format (your known-good link)
  */
 
 function pad(n) {
@@ -103,7 +103,7 @@ function wrapTpLink(baseUrl, targetUrl) {
 }
 
 // ----------------------------------------------------------
-// ✈️ Local fallback resolvers (to avoid cross-module deps)
+// ✈️ Local fallback resolvers (limited; no fake slice)
 // ----------------------------------------------------------
 function resolveIsoFromSlug(slug) {
   const map = {
@@ -144,6 +144,19 @@ function resolveCountrySlugFromCity(citySlug) {
   return map[citySlug?.toLowerCase()] || null;
 }
 
+// Alpha2 → long slug helper for LP safety
+const COUNTRY_SLUG_FROM_A2 = {
+  EG: "egypt",
+  US: "united-states-of-america",
+  GB: "united-kingdom",
+  NL: "netherlands",
+  DE: "germany",
+  ES: "spain",
+  AZ: "azerbaijan",
+  ZA: "south-africa",
+  IS: "iceland",
+};
+
 // ----------------------------------------------------------
 // 🔗 Core deep link builder
 // ----------------------------------------------------------
@@ -166,6 +179,12 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
   mapping.country_slug = mapping.country_slug || "";
   mapping.country_code = mapping.country_code || resolveIsoFromSlug(mapping.city_slug) || "XX";
 
+  // Compute dependable IATA (no slicing fallback)
+  const resolvedDestIata =
+    (mapping.destination_code && String(mapping.destination_code).toUpperCase()) ||
+    (mapping.iata_code && String(mapping.iata_code).toUpperCase()) ||
+    (resolveIataFromSlug(mapping.city_slug) || null);
+
   const resolved = {
     origin_code:
       (context.origin_code || mapping.origin_code || process.env.DEFAULT_ORIGIN_CODE || "LON")
@@ -179,15 +198,7 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
       mapping.origin ||
       "London",
 
-    destination_code: (() => {
-      let code =
-        mapping.destination_code ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-      code = code.toString().toUpperCase().slice(0, 3);
-      return code;
-    })(),
+    destination_code: resolvedDestIata, // may be null → certain partners will skip
     destination_city:
       mapping.destination_city || mapping.city_slug || mapping.override_slug,
   };
@@ -210,9 +221,8 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "booking_attractions": {
-      // Requires ISO2 lowercase in path
-      let code = mapping.country_code;
-      if (!code && mapping.city_slug) code = resolveIsoFromSlug(mapping.city_slug);
+      // Requires ISO2 lowercase in path; must exist
+      let code = mapping.country_code || resolveIsoFromSlug(mapping.city_slug);
       const codeLower = (code || "XX").toLowerCase();
       const url = `https://www.booking.com/attractions/searchresults/${codeLower}/${mapping.city_slug}.html`;
       return wrapOut(base, url);
@@ -233,18 +243,16 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "lonelyplanet": {
-      // Needs both city + full country slug
+      // Needs both city + full country slug (never alpha2)
       const alias = { baku: "baku-baki" };
       const citySlug = alias[mapping.city_slug] || mapping.city_slug;
-      let countrySlug = mapping.country_slug || resolveCountrySlugFromCity(mapping.city_slug) || "";
 
-      // Defensive: if still alpha2, degrade to 'country' (avoid 'us' paths)
+      let countrySlug = mapping.country_slug || resolveCountrySlugFromCity(mapping.city_slug) || "";
       if (countrySlug && countrySlug.length === 2) {
-        // last-resort map for common cases
-        const a2map = { eg: "egypt", us: "united-states", gb: "united-kingdom", nl: "netherlands", de: "germany", es: "spain" };
-        countrySlug = a2map[countrySlug.toLowerCase()] || countrySlug;
+        countrySlug = COUNTRY_SLUG_FROM_A2[countrySlug.toUpperCase()] || countrySlug;
       }
 
+      // If still missing or alpha-like -> fail to homepage
       if (!citySlug || !countrySlug || countrySlug.length <= 2) {
         return wrapOut(base, "https://www.lonelyplanet.com/");
       }
@@ -254,72 +262,40 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "aviasales": {
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-        cairo: "CAI",
-      };
-
-      let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      destIata = destIata.toUpperCase().substring(0, 3);
-
-      const originFinal = resolved.origin_code;
-
-      const flightPath = `${originFinal}${e.depart_ddmm}${destIata}${e.return_ddmm}1`;
+      // Require a valid destination IATA; if absent, skip link
+      if (!resolved.destination_code) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
+      const flightPath = `${resolved.origin_code}${e.depart_ddmm}${resolved.destination_code}${e.return_ddmm}1`;
       const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
       return wrapOut(base, aviasalesUrl);
     }
 
     case "cheapoair": {
-      const originIata = resolved.origin_code;
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-        cairo: "CAI",
-      };
-
-      let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      destIata = destIata.toUpperCase().substring(0, 3);
-
-      const url = `https://www.cheapoair.com/air/listing?&d1=${originIata}&r1=${destIata}&dt1=${e.depart_mm_dd_yyyy}&dtype1=A&rtype1=A&d2=${destIata}&r2=${originIata}&dt2=${e.return_mm_dd_yyyy}&dtype2=A&rtype2=A&tripType=ROUNDTRIP`;
+      if (!resolved.destination_code) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
+      const url = `https://www.cheapoair.com/air/listing?&d1=${resolved.origin_code}&r1=${resolved.destination_code}&dt1=${e.depart_mm_dd_yyyy}&dtype1=A&rtype1=A&d2=${resolved.destination_code}&r2=${resolved.origin_code}&dt2=${e.return_mm_dd_yyyy}&dtype2=A&rtype2=A&tripType=ROUNDTRIP`;
       return wrapOut(base, url);
     }
 
     case "expedia_flights": {
-      // Match your known-good format with rich labels
+      // Build “known-good” format with readable labels
+      if (!resolved.destination_code) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
       const originIata = resolved.origin_code; // e.g., LON
-      const destIata =
-        (mapping.iata_code || resolveIataFromSlug(mapping.city_slug) || "XXX")
-          .toString().toUpperCase().slice(0, 3);
+      const destIata = resolved.destination_code; // e.g., CAI
 
       const originCity = titleCase(mapping.origin_city || "London");
       const destCity = titleCase(mapping.destination_city || mapping.city_slug || "Destination");
 
       const originLabel =
         originIata === "LON" ? `${originCity} (LON-All Airports)` : `${originCity} (${originIata})`;
-      // Known special for Cairo
+
       const destinationLabel =
         destIata === "CAI" ? `${destCity} (CAI - Cairo Intl.)` : `${destCity} (${destIata})`;
 
-      // Dates already formatted in e.*
       const url =
         `https://www.expedia.com/Flights-Search?` +
         `leg1=from:${encodeURIComponent(originLabel)},to:${encodeURIComponent(destinationLabel)},departure:${encodeURIComponent(e.depart_mm_dd_yyyy)}TANYT,fromType:U,toType:U` +
@@ -334,14 +310,10 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "booking_kayak": {
-      const originIata = resolved.origin_code;
-      let destIata =
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      destIata = destIata.toUpperCase().substring(0, 3);
-      const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${e.depart_yyyy_mm_dd}/${e.return_yyyy_mm_dd}`;
+      if (!resolved.destination_code) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
+      const url = `https://booking.kayak.com/flights/${resolved.origin_code}-${resolved.destination_code}/${e.depart_yyyy_mm_dd}/${e.return_yyyy_mm_dd}`;
       return { deep_link: url, rawTarget: url, encodedTarget: encodeURIComponent(url) };
     }
 

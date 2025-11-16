@@ -7,9 +7,11 @@
 
 const { createClient } = require("@supabase/supabase-js");
 const { v4: uuidv4 } = require("uuid");
+const { enrichMapping } = require("./utils/enrichMapping"); // ✅ modularized enrichment logic
+const { buildDeepLink } = require("./utils/buildDeepLink"); // Optional if modularized
 
 // ----------------------------------------------------------
-// Initialize Supabase client (Server-side, uses Service Role key)
+// Initialize Supabase client (Service Role Key required)
 // ----------------------------------------------------------
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -17,301 +19,222 @@ const supabase = createClient(
 );
 
 // ----------------------------------------------------------
-// Helpers - date formatting & safety
+// Helper: Choose smart default origin (extendable via GeoIP)
 // ----------------------------------------------------------
-function pad(n) {
-  return String(n).padStart(2, "0");
-}
-
-function formatDateParts(offsetDays = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  return {
-    yyyy_mm_dd: `${yyyy}-${mm}-${dd}`,
-    mm_dd_yyyy: `${mm}/${dd}/${yyyy}`,
-    ddmm: `${dd}${mm}`,
-    mmdd: `${mm}${dd}`,
-  };
-}
-
-function getFlightRange() {
-  const depart = formatDateParts(7);
-  const ret = formatDateParts(14);
-  return {
-    depart_iso: depart.yyyy_mm_dd,
-    return_iso: ret.yyyy_mm_dd,
-    depart_mm_dd_yyyy: depart.mm_dd_yyyy,
-    return_mm_dd_yyyy: ret.mm_dd_yyyy,
-    depart_ddmm: depart.ddmm,
-    return_ddmm: ret.ddmm,
-    depart_mmdd: depart.mmdd,
-    return_mmdd: ret.mmdd,
-    depart_yyyy_mm_dd: depart.yyyy_mm_dd,
-    return_yyyy_mm_dd: ret.yyyy_mm_dd,
-  };
-}
-
-function safeVal(v) {
-  if (v === undefined || v === null) return "";
-  return String(v);
-}
-
-// ----------------------------------------------------------
-// Normalization: clean city/place names (airport parentheticals)
-// - Keep descriptive parentheticals with " - " (e.g., "(CDG - Charles De Gaulle)")
-// - Remove plain single codes like "(LAX)"
-// - If duplicate pattern "Name (CODE - desc) (CODE)" keep the descriptive and drop trailing (CODE)
-// ----------------------------------------------------------
-function normalizePlaceName(raw) {
-  if (!raw || typeof raw !== "string") return raw;
-  let s = raw.trim();
-
-  // extract parenthetical contents
-  const parenMatches = [];
-  const re = /\(([^)]+)\)/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    parenMatches.push(m[1].trim());
+function getFallbackOrigin(req_origin_code, req_origin_city) {
+  if (req_origin_code && req_origin_city) {
+    return { code: req_origin_code, city: req_origin_city };
   }
 
-  // no parentheses: nothing to do
-  if (parenMatches.length === 0) return s;
-
-  // helper: is plain code (2-4 alnum, maybe with dash)
-  const isPlainCode = (t) => /^[A-Za-z0-9]{1,6}$/.test(t.replace(/\s+/g, ""));
-
-  // if multiple parentheses and first contains " - " (descriptive) and last is plain code duplicates -> drop trailing plain ones
-  if (parenMatches.length > 1 && parenMatches[0].includes(" - ")) {
-    // keep only first descriptive parenthetical
-    const before = s.slice(0, s.indexOf("(")).trim();
-    const kept = `(${parenMatches[0]})`;
-    return `${before}${kept}`.trim();
-  }
-
-  // if exactly one parenthetical and it's a plain code (airport code like (LAX)) -> remove it
-  if (parenMatches.length === 1 && isPlainCode(parenMatches[0])) {
-    // remove the single parenthetical
-    s = s.replace(/\s*\([^)]+\)\s*$/, "").trim();
-    return s;
-  }
-
-  // if there are duplicates like "Name (CODE - desc) (CODE)" but first may or may not have ' - '
-  // fallback: prefer any parenthetical containing " - " (descriptive); if present, keep first such and remove others
-  const desc = parenMatches.find((p) => p.includes(" - "));
-  if (desc) {
-    const before = s.slice(0, s.indexOf("(")).trim();
-    return `${before}(${desc})`.trim();
-  }
-
-  // otherwise keep original (or remove trailing duplicate identical parentheses)
-  // remove exact duplicates at end: e.g., "Name (JFK) (JFK)" -> "Name (JFK)"
-  if (parenMatches.length > 1 && parenMatches[parenMatches.length - 1] === parenMatches[parenMatches.length - 2]) {
-    // remove last duplicate
-    s = s.replace(/\s*\([^)]+\)\s*$/, "").trim(); // remove last
-    return s;
-  }
-
-  // default: return input unchanged (safe fallback)
-  return s;
-}
-
-// ----------------------------------------------------------
-// Template substitution
-// ----------------------------------------------------------
-function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
-  if (!template) return "";
-
-  const vars = {
-    city_slug: safeVal(mapping.city_slug),
-    country_slug: safeVal(mapping.country_slug),
-    country_code: safeVal(mapping.country_code),
-    geo_id: safeVal(mapping.geo_id),
-    prefixed_geo_id: safeVal(mapping.prefixed_geo_id),
-    origin: safeVal(context.origin || mapping.origin || mapping.origin_city),
-    origin_code: safeVal(context.origin_code || mapping.origin_code),
-    origin_city: safeVal(context.origin_city || mapping.origin_city),
-    destination: safeVal(mapping.destination || mapping.city_slug),
-    destination_code: safeVal(mapping.destination_code),
-    destination_city: safeVal(context.destination_city || mapping.destination_city || mapping.city_slug),
-    depart: safeVal(extras.depart_iso),
-    return: safeVal(extras.return_iso),
-    depart_mm_dd_yyyy: safeVal(extras.depart_mm_dd_yyyy),
-    return_mm_dd_yyyy: safeVal(extras.return_mm_dd_yyyy),
-    depart_ddmm: safeVal(extras.depart_ddmm),
-    return_ddmm: safeVal(extras.return_ddmm),
-    depart_yyyy_mm_dd: safeVal(extras.depart_yyyy_mm_dd),
-    return_yyyy_mm_dd: safeVal(extras.return_yyyy_mm_dd),
-    adults: safeVal(extras.adults || 2),
-    slug: safeVal(mapping.override_slug || mapping.city_slug || mapping.country_slug),
-  };
-
-  let out = template;
-  for (const [k, v] of Object.entries(vars)) {
-    out = out.split(`{${k}}`).join(v);
-  }
-  return out;
-}
-
-function wrapTpLink(baseUrl, targetUrl) {
-  if (!baseUrl) return targetUrl;
-  const encodedTarget = encodeURIComponent(targetUrl);
-  if (/[?&]u=/.test(baseUrl)) {
-    return baseUrl.replace(/([?&]u=)([^&]*)/, `$1${encodedTarget}`);
-  }
-  return baseUrl.includes("?")
-    ? `${baseUrl}&u=${encodedTarget}`
-    : `${baseUrl}?u=${encodedTarget}`;
-}
-
-// ----------------------------------------------------------
-// TripAdvisor geo helpers and fallback (REQUIRED FUNCTION)
-// ----------------------------------------------------------
-function ensureTripadvisorGeoId(mapping) {
-  if (!mapping) return mapping;
-
-  // already has prefixed form
-  if (mapping.prefixed_geo_id) return mapping;
-
-  const gid =
-    mapping.geo_id ||
-    mapping.new_geo_id ||
-    mapping.newGeoId ||
-    null;
-
-  if (!gid) return mapping;
-
-  mapping.prefixed_geo_id =
-    /^[0-9]+$/.test(String(gid)) ? `g${gid}` : String(gid);
-
-  return mapping;
-}
-
-// ----------------------------------------------------------
-// TripAdvisor unified geoId resolver (cache → log → API → cache/log)
-// ----------------------------------------------------------
-async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
-  if (!citySlug) return null;
-
-  // 1️⃣ geo_enrichment_log (city+country)
-  let { data: geo1 } = await supabase
-    .from("geo_enrichment_log")
-    .select("new_geo_id, prefixed_geo_id, country_code, country_name")
-    .eq("city_slug", citySlug)
-    .eq("country_slug", countrySlug)
-    .maybeSingle();
-
-  if (geo1?.new_geo_id) {
+  if (process.env.DEFAULT_ORIGIN_CODE && process.env.DEFAULT_ORIGIN_CITY) {
     return {
-      geo_id: geo1.new_geo_id,
-      prefixed: geo1.prefixed_geo_id || `g${geo1.new_geo_id}`,
-      country_code: geo1.country_code || null,
-      country_name: geo1.country_name || null,
+      code: process.env.DEFAULT_ORIGIN_CODE,
+      city: process.env.DEFAULT_ORIGIN_CITY,
     };
   }
 
-  // 2️⃣ geo_enrichment_log (city only)
-  let { data: geo2 } = await supabase
-    .from("geo_enrichment_log")
-    .select("new_geo_id, prefixed_geo_id, country_code, country_name")
-    .eq("city_slug", citySlug)
-    .maybeSingle();
+  return { code: "LON", city: "London" };
+}
 
-  if (geo2?.new_geo_id) {
-    return {
-      geo_id: geo2.new_geo_id,
-      prefixed: geo2.prefixed_geo_id || `g${geo2.new_geo_id}`,
-      country_code: geo2.country_code || null,
-      country_name: geo2.country_name || null,
-    };
-  }
+// ----------------------------------------------------------
+// Main Handler
+// ----------------------------------------------------------
+exports.handler = async function (event) {
+  console.log("🚀 Starting generateAffiliateLinks_v3");
 
-  // 3️⃣ tripadvisor_cache (json-based)
-  const { data: cached } = await supabase
-    .from("tripadvisor_cache")
-    .select("response, country_slug")
-    .eq("query", citySlug)
-    .maybeSingle();
+  const body = event.body ? JSON.parse(event.body) : {};
+  const {
+    partners = [],
+    limit = 0,
+    debug = false,
+    origin_code: req_origin_code,
+    origin_city: req_origin_city,
+    origin: req_origin,
+    fallbackCities = [],
+  } = body;
 
-  if (cached?.response?.json?.data?.length) {
-    const best = cached.response.json.data[0];
-    const geoId = best.location_id;
+  console.log(
+    `⚙️ Params => partners:${partners.length ? partners.join(", ") : "all"}, limit:${limit}, debug:${debug}`
+  );
 
-    return {
-      geo_id: geoId,
-      prefixed: `g${geoId}`,
-      country_code: best.address_obj?.countrycode?.toUpperCase?.() || null,
-      country_name: best.address_obj?.country || null,
-    };
-  }
-
-  // 4️⃣ FINAL – Official TripAdvisor API
-  const apiKey = process.env.TRIPADVISOR_API_KEY;
-  if (!apiKey) return null;
+  const generation_id = uuidv4();
+  const fallbackOrigin = getFallbackOrigin(req_origin_code, req_origin_city);
 
   try {
-    const url =
-      `https://api.content.tripadvisor.com/api/v1/location/search` +
-      `?key=${apiKey}` +
-      `&searchQuery=${encodeURIComponent(citySlug)}` +
-      `&category=geos`;
-
-    const res = await fetch(url);
-    const json = await res.json();
-
-    if (!json?.data?.length) return null;
-
-    const best = json.data[0];
-    const geoId = best.location_id;
-    const country_code =
-      best.address_obj?.countrycode?.toUpperCase?.() || null;
-    const country_name = best.address_obj?.country || null;
-
-    // 🔘 Cache write
-    await supabase.from("tripadvisor_cache").upsert(
+    await supabase.from("data_generations").insert([
       {
-        query: citySlug,
-        country_slug: countrySlug,
-        response: { json },
-        fetched_at: new Date().toISOString(),
+        id: generation_id,
+        generated_by: "generateAffiliateLinks_v3",
+        started_at: new Date().toISOString(),
+        notes: "Automated affiliate link generation batch",
       },
-      {
-        onConflict: "query,country_slug",
-      }
-    );
-
-    // 🔘 Log write
-    await supabase.from("geo_enrichment_log").upsert(
-      {
-        city_slug: citySlug,
-        country_slug: countrySlug,
-        new_geo_id: geoId,
-        country_code,
-        country_name,
-        prefixed_geo_id: `g${geoId}`,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "city_slug,country_slug",
-      }
-    );
-
-    return {
-      geo_id: geoId,
-      prefixed: `g${geoId}`,
-      country_code,
-      country_name,
-    };
+    ]);
   } catch (err) {
-    console.warn("⚠️ TripAdvisor API error:", err.message);
-    return null;
+    console.error("⚠️ Could not create data_generation record:", err.message);
   }
-}
+
+  const partnerSummaries = {};
+  const previewLinks = [];
+  let totalCount = 0;
+
+  const affiliates = await getActiveAffiliates();
+  const targetAffiliates = partners.length
+    ? affiliates.filter((a) => partners.includes(a.partner_code))
+    : affiliates;
+
+  for (const partner of targetAffiliates) {
+    console.log(`\n🔗 Generating links for ${partner.partner_code}...`);
+    partnerSummaries[partner.partner_code] = {
+      success: 0,
+      failed: 0,
+      examples: [],
+    };
+
+    let flightPreviews = [];
+    if (
+      ["aviasales", "booking_kayak", "expedia_flights", "cheapoair"].includes(
+        partner.partner_code
+      )
+    ) {
+      try {
+        flightPreviews = await fetchFlightPreviews(partner.partner_code);
+      } catch (e) {
+        console.warn("⚠️ flight preview fetch error:", e.message);
+      }
+    }
+
+    let mappings = [];
+
+    if (fallbackCities.length > 0) {
+      mappings = fallbackCities.map((slug) => ({
+        id: null,
+        city_slug: slug,
+        destination_city: slug,
+        origin_code: req_origin_code || fallbackOrigin.code,
+        origin_city: req_origin_city || fallbackOrigin.city,
+      }));
+      console.log(
+        `⚙️ Using fallbackCities for ${partner.partner_code}: ${fallbackCities.join(", ")} (origin: ${req_origin_code || fallbackOrigin.code}/${req_origin_city || fallbackOrigin.city})`
+      );
+    } else {
+      mappings = await getPartnerMappings(partner.partner_code);
+    }
+
+    const sliced = limit > 0 ? mappings.slice(0, limit) : mappings;
+
+    for (const mappingRow of sliced) {
+      const mapping = { ...mappingRow };
+      const destination_slug = mapping.city_slug || mapping.country_slug || "none";
+
+      try {
+        // ✨ Enrich mapping using utils/enrichMapping.js
+        const enriched = await enrichMapping(mapping, {
+          partner_code: partner.partner_code,
+          originFallback: fallbackOrigin,
+        });
+
+        // 🧪 Flight origin fallback
+        if (
+          ["aviasales", "expedia_flights", "booking_kayak", "cheapoair"].includes(
+            partner.partner_code
+          )
+        ) {
+          if (!enriched.origin_code && flightPreviews[0]?.origin_code) {
+            enriched.origin_code = flightPreviews[0].origin_code;
+          }
+          if (!enriched.origin_city && flightPreviews[0]?.origin_city) {
+            enriched.origin_city = flightPreviews[0].origin_city;
+          }
+        }
+
+        // 📦 Build deep link
+        const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =
+          buildDeepLink(partner, enriched, { adults: 1 }, {
+            origin_code: req_origin_code,
+            origin_city: req_origin_city,
+            origin: req_origin,
+          });
+
+        // ⛔️ Skip empty deep links (unmapped)
+        if (!deep_link) {
+          console.warn(`⚠️ Skipping ${partner.partner_code}/${destination_slug} → no valid link generated`);
+          continue;
+        }
+
+        if (debug) {
+          partnerSummaries[partner.partner_code].examples.push({
+            destination_slug,
+            deep_link,
+            raw_target,
+          });
+          previewLinks.push({
+            partner: partner.partner_code,
+            destination_slug,
+            deep_link,
+            raw_target,
+          });
+          partnerSummaries[partner.partner_code].success++;
+          totalCount++;
+          console.log(`🧪 ${partner.partner_code} -> ${destination_slug}`);
+          continue;
+        }
+
+        await insertGeneratedLinkWithRetry(
+          {
+            affiliate_id: partner.affiliate_id,
+            destination_slug,
+            partner_code: partner.partner_code,
+            deep_link,
+            raw_target,
+            encoded_target,
+            base_url: partner.base_url,
+            generation_id,
+          },
+          { debug }
+        );
+
+        partnerSummaries[partner.partner_code].success++;
+        totalCount++;
+
+        if (partnerSummaries[partner.partner_code].examples.length < 3) {
+          partnerSummaries[partner.partner_code].examples.push({
+            destination_slug,
+            deep_link,
+          });
+        }
+
+        console.log(`✅ ${partner.partner_code} → ${destination_slug}`);
+      } catch (err) {
+        partnerSummaries[partner.partner_code].failed++;
+        console.error(
+          `❌ Failed for ${partner.partner_code} (${destination_slug}): ${err.message}`
+        );
+      }
+    }
+  }
+
+  await supabase
+    .from("data_generations")
+    .update({
+      completed_at: new Date().toISOString(),
+      record_count: totalCount,
+      notes: JSON.stringify({ summary: partnerSummaries, env_debug: debug }),
+    })
+    .eq("id", generation_id);
+
+  console.log("\n🎉 Done generating affiliate links.");
+  const response = {
+    message: "Affiliate links generated successfully.",
+    generation_id,
+    totalCount,
+    partnerSummaries,
+  };
+  if (debug) response.previewLinks = previewLinks.slice(0, 200);
+  return { statusCode: 200, body: JSON.stringify(response) };
+};
 
 // ----------------------------------------------------------
-// Fetchers (Supabase)
+// ✅ Supabase Accessors
 // ----------------------------------------------------------
 async function getActiveAffiliates() {
   const { data, error } = await supabase
@@ -326,9 +249,7 @@ async function getActiveAffiliates() {
 async function getPartnerMappings(partnerCode) {
   const { data, error } = await supabase
     .from("partner_mappings")
-    .select(
-      "id, city_slug, country_slug, country_code, geo_id, override_url, override_slug, active, origin_code, destination_code, origin_city, destination_city"
-    )
+    .select("*")
     .eq("partner_code", partnerCode)
     .eq("active", true);
 
@@ -347,112 +268,9 @@ async function fetchFlightPreviews(partnerCode) {
     throw new Error(`Error fetching flight previews: ${error.message}`);
   return data || [];
 }
-// ----------------------------------------------------------
-// Airports preload & enrichment helpers
-// ----------------------------------------------------------
-
-async function preloadAirports() {
-  try {
-    const { data: rows, error } = await supabase
-      .from("airports")
-      .select("code, icao, name, city, city_code, country, latitude, longitude, time_zone")
-      .limit(10000);
-    if (error) {
-      console.warn("⚠️ Failed to preload airports:", error.message);
-      return { byCity: new Map(), byIata: new Map() };
-    }
-    const byCity = new Map();
-    const byIata = new Map();
-    for (const r of rows || []) {
-      const citySlug = (r.city || "").toLowerCase().replace(/\s+/g, "-");
-      if (citySlug && !byCity.has(citySlug)) byCity.set(citySlug, r);
-      if (r.code) byIata.set(r.code.toUpperCase(), r);
-    }
-    return { byCity, byIata };
-  } catch (err) {
-    console.warn("⚠️ Exception preloading airports:", err.message);
-    return { byCity: new Map(), byIata: new Map() };
-  }
-}
-
-function enrichMappingWithAirports(mapping, airportsMap) {
-  if (!mapping || !airportsMap) return mapping;
-  const { byCity, byIata } = airportsMap;
-  const citySlug = (mapping.city_slug || "").toLowerCase();
-
-  let airport = byCity.get(citySlug);
-  if (!airport && mapping.destination_code && mapping.destination_code.length === 3) {
-    airport = byIata.get(mapping.destination_code.toUpperCase());
-  }
-
-  if (airport) {
-    if (!mapping.country_code) {
-      if (airport.city_code && airport.city_code.length === 2)
-        mapping.country_code = airport.city_code.toUpperCase();
-      else if (airport.country && airport.country.length === 2)
-        mapping.country_code = airport.country.toUpperCase();
-    }
-    if (mapping.country_code && !mapping.country_code_small)
-      mapping.country_code_small = mapping.country_code.toLowerCase();
-
-    if (!mapping.destination_code && airport.code)
-      mapping.destination_code = airport.code.toUpperCase();
-
-    if (!mapping.iata_code && airport.code)
-      mapping.iata_code = airport.code.toUpperCase();
-
-    if (!mapping.destination_city && airport.city)
-      mapping.destination_city = airport.city;
-  }
-
-  if (!mapping.country_slug && mapping.country_code)
-    mapping.country_slug = mapping.country_code.toLowerCase();
-
-  return mapping;
-}
 
 // ----------------------------------------------------------
-// Simple fallback resolvers (until full airport table join)
-// ----------------------------------------------------------
-function resolveIsoFromSlug(slug) {
-  const map = {
-    madrid: "ES",
-    berlin: "DE",
-    amsterdam: "NL",
-    "cape-town": "ZA",
-    baku: "AZ",
-    reykjavik: "IS",
-  };
-  return map[slug?.toLowerCase()] || null;
-}
-
-function resolveIataFromSlug(slug) {
-  const map = {
-    madrid: "MAD",
-    berlin: "BER",
-    amsterdam: "AMS",
-    "cape-town": "CPT",
-    baku: "GYD",
-    reykjavik: "REK",
-  };
-  return map[slug?.toLowerCase()] || null;
-}
-
-function resolveCountrySlugFromCity(citySlug) {
-  const map = {
-    cairo: "egypt",
-    madrid: "spain",
-    berlin: "germany",
-    amsterdam: "netherlands",
-    "cape-town": "south-africa",
-    baku: "azerbaijan",
-    reykjavik: "iceland",
-  };
-  return map[citySlug?.toLowerCase()] || null;
-}
-
-// ----------------------------------------------------------
-// DB insert/upsert
+// DB Insert Helpers
 // ----------------------------------------------------------
 async function insertGeneratedLink({
   affiliate_id,
@@ -507,612 +325,4 @@ async function insertGeneratedLinkWithRetry(payload, { debug = false } = {}) {
       await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt)));
     }
   }
-}
-
-// ----------------------------------------------------------
-// Deep link builder (final verified fix)
-// ----------------------------------------------------------
-function buildDeepLink(partner, mapping, extras, context = {}) {
-  const base = partner.base_url || "";
-  const template = partner.template_url || "";
-  const partnerNeedsOrigin = [
-    "aviasales",
-    "expedia_flights",
-    "booking_kayak",
-    "cheapoair",
-  ].includes(partner.partner_code);
-
-  // ✅ Normalize mapping safety
-  mapping.city_slug = mapping.city_slug || mapping.country_slug || "none";
-  mapping.country_slug = mapping.country_slug || ""; // leave empty if unknown
-  mapping.country_code =
-    mapping.country_code ||
-    resolveIsoFromSlug(mapping.city_slug) ||
-    "XX";
-
-  const resolved = {
-    origin_code:
-      context.origin_code ||
-      mapping.origin_code ||
-      process.env.DEFAULT_ORIGIN_CODE ||
-      "CAI",
-    origin_city:
-      context.origin_city ||
-      mapping.origin_city ||
-      context.origin ||
-      mapping.origin ||
-      "Cairo",
-    destination_code:
-      mapping.destination_code ||
-      mapping.geo_id ||
-      mapping.iata_code ||
-      mapping.city_slug?.slice(0, 3).toUpperCase() ||
-      "XXX",
-    destination_city:
-      mapping.destination_city || mapping.city_slug || mapping.override_slug,
-  };
-
-  if (partnerNeedsOrigin && !resolved.origin_code && !resolved.origin_city) {
-    resolved.origin_code = "CAI";
-    resolved.origin_city = "Cairo";
-  }
-
-  const rawTarget = mapping.override_url
-    ? applyTemplate(mapping.override_url, mapping, extras, resolved)
-    : applyTemplate(template, mapping, extras, resolved);
-
-  switch (partner.partner_code) {
-    case "booking_stays": {
-      const slug = mapping.city_slug || mapping.destination_city || "";
-      const countryPart = mapping.country_slug ? `,+${mapping.country_slug}` : "";
-      const baseTarget = `https://www.booking.com/searchresults.html?ss=${slug}${countryPart}`;
-      const url = rawTarget || baseTarget;
-      return wrapOut(base, url);
-    }
-
-    case "booking_attractions": {
-  let code = mapping.country_code;
-
-  if (!code && mapping.city_slug) {
-    code = resolveIsoFromSlug(mapping.city_slug) || null;
-  }
-
-  if (!code && mapping.country_slug) {
-    code = mapping.country_slug.slice(0, 2).toUpperCase(); // try fallback from country_slug
-  }
-
-  const codeLower = (code || "xx").toLowerCase();
-  const url = `https://www.booking.com/attractions/searchresults/${codeLower}/${mapping.city_slug}.html`;
-  return wrapOut(base, url);
-}
-
-    case "gocity": {
-      // ✅ Only allow mapped cities
-      if (!mapping.id) {
-        return { deep_link: null, rawTarget: null, encodedTarget: null };
-      }
-
-      const url = `https://gocity.com/en/${mapping.city_slug}`;
-      return wrapOut(base, url);
-    }
-
-    case "elsewhere": {
-      // ✅ Only allow mapped countries
-      if (!mapping.id) {
-        return { deep_link: null, rawTarget: null, encodedTarget: null };
-      }
-
-      const urlBase = `https://www.elsewhere.io/${mapping.country_slug}`;
-      const tracking =
-        "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate";
-      return wrapOut(base, urlBase + tracking);
-    }
-
-    case "lonelyplanet": {
-  const alias = {
-    baku: "baku-baki",
-  };
-
-  const citySlug = alias[mapping.city_slug] || mapping.city_slug;
-  let countrySlug = mapping.country_slug;
-
-  // Fallback: try to resolve from airport view
-  if (!countrySlug && mapping.city_slug) {
-    countrySlug = resolveCountrySlugFromCity(mapping.city_slug) || "";
-  }
-
-  if (!citySlug || !countrySlug) {
-    return wrapOut(base, "https://www.lonelyplanet.com/");
-  }
-
-  const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
-  return wrapOut(base, target);
-}
-
-    case "aviasales": {
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-      };
-
-      let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      destIata = destIata.toUpperCase().substring(0, 3);
-
-      const originFinal =
-        context.origin_code?.toUpperCase() ||
-        mapping.origin_code?.toUpperCase() ||
-        process.env.DEFAULT_ORIGIN_CODE ||
-        "LON";
-
-      const flightPath = `${originFinal}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
-      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
-      return wrapOut(base, aviasalesUrl);
-    }
-
-    case "cheapoair": {
-      const originIata = (mapping.origin_code || context.origin_code || "LON")
-        .slice(0, 3)
-        .toUpperCase();
-
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-      };
-
-      let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      const url = `https://www.cheapoair.com/air/listing?&d1=${originIata}&r1=${destIata}&dt1=${extras.depart_mm_dd_yyyy}&dtype1=A&rtype1=A&d2=${destIata}&r2=${originIata}&dt2=${extras.return_mm_dd_yyyy}&dtype2=A&rtype2=A&tripType=ROUNDTRIP`;
-
-      return wrapOut(base, url);
-    }
-
-    case "booking_kayak": {
-      const originIata = (mapping.origin_code || context.origin_code || "LON")
-        .slice(0, 3)
-        .toUpperCase();
-
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-      };
-
-      const destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
-        mapping.iata_code ||
-        resolveIataFromSlug(mapping.city_slug) ||
-        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-
-      const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
-
-      return {
-        deep_link: url,
-        rawTarget: url,
-        encodedTarget: encodeURIComponent(url),
-      };
-    }
-
-    case "tripadvisor_attractions":
-    case "tripadvisor_hotels":
-    case "tripadvisor_restaurants": {
-      const type = partner.partner_code.replace("tripadvisor_", "");
-      const slug = mapping.city_slug;
-
-      let url;
-
-      if (!mapping.prefixed_geo_id) {
-        switch (type) {
-          case "attractions":
-            url = `https://www.tripadvisor.com/Attractions--Activities-${slug}.html`;
-            break;
-          case "hotels":
-            url = `https://www.tripadvisor.com/Hotels--${slug}-Hotels.html`;
-            break;
-          case "restaurants":
-            url = `https://www.tripadvisor.com/Restaurants--${slug}.html`;
-            break;
-          default:
-            url = `https://www.tripadvisor.com/Search?q=${slug}`;
-        }
-      } else {
-        switch (type) {
-          case "attractions":
-            url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${slug}.html`;
-            break;
-          case "hotels":
-            url = `https://www.tripadvisor.com/Hotels-${mapping.prefixed_geo_id}-Hotels-${slug}.html`;
-            break;
-          case "restaurants":
-            url = `https://www.tripadvisor.com/Restaurants-${mapping.prefixed_geo_id}-${slug}.html`;
-            break;
-          default:
-            url = `https://www.tripadvisor.com/Search?q=${slug}`;
-        }
-      }
-
-      return wrapOut(base, url);
-    }
-
-    case "getyourguide": {
-      const slug = mapping.city_slug;
-      if (!slug) {
-        return wrapOut(base, base || "https://www.getyourguide.com/");
-      }
-      const url = `https://www.getyourguide.com/s/?q=${slug}`;
-      return wrapOut(base, url);
-    }
-
-    default:
-      return wrapOut(base, rawTarget || template || base);
-  }
-
-  function wrapOut(b, target) {
-    const encoded = encodeURIComponent(target);
-    const deep_link = wrapTpLink(b, target);
-    return { deep_link, rawTarget: target, encodedTarget: encoded };
-  }
-}
-
-// ----------------------------------------------------------
-// Main handler (with dynamic fallback & smart default origin)
-// ----------------------------------------------------------
-
-exports.handler = async function (event) {
-  console.log("🚀 Starting generateAffiliateLinks_v3");
-
-  const body = event.body ? JSON.parse(event.body) : {};
-  const {
-    partners = [],
-    limit = 0,
-    debug = false,
-    origin_code: req_origin_code,
-    origin_city: req_origin_city,
-    origin: req_origin,
-    fallbackCities = [], // optional list of city_slugs to auto-inject/force
-  } = body;
-
-  console.log(
-    `⚙️ Params => partners:${partners.length ? partners.join(", ") : "all"}, limit:${limit}, debug:${debug}`
-  );
-
-  const generation_id = uuidv4();
-  // ✈️ Preload airport data once for local enrichment cache (not yet used deeply)
-  const airportsCache = await preloadAirports();
-
-  try {
-    await supabase.from("data_generations").insert([
-      {
-        id: generation_id,
-        generated_by: "generateAffiliateLinks_v3",
-        started_at: new Date().toISOString(),
-        notes: "Automated affiliate link generation batch",
-      },
-    ]);
-  } catch (err) {
-    console.error("⚠️ Could not create data_generation record:", err.message);
-  }
-
-  const partnerSummaries = {};
-  const previewLinks = [];
-  let totalCount = 0;
-
-  // ----------------------------------------------------------
-  // Helper: Choose smart default origin (extendable via GeoIP)
-  // ----------------------------------------------------------
-  function getFallbackOrigin() {
-    if (req_origin_code && req_origin_city) {
-      return { code: req_origin_code, city: req_origin_city };
-    }
-
-    if (process.env.DEFAULT_ORIGIN_CODE && process.env.DEFAULT_ORIGIN_CITY) {
-      return {
-        code: process.env.DEFAULT_ORIGIN_CODE,
-        city: process.env.DEFAULT_ORIGIN_CITY,
-      };
-    }
-
-    return { code: "LON", city: "London" };
-  }
-
-  try {
-    const affiliates = await getActiveAffiliates();
-    const targetAffiliates = partners.length
-      ? affiliates.filter((a) => partners.includes(a.partner_code))
-      : affiliates;
-
-    for (const partner of targetAffiliates) {
-      partnerSummaries[partner.partner_code] = {
-        success: 0,
-        failed: 0,
-        examples: [],
-      };
-      console.log(`\n🔗 Generating links for ${partner.partner_code}...`);
-
-      let flightPreviews = [];
-      if (
-        ["aviasales", "booking_kayak", "expedia_flights", "cheapoair"].includes(
-          partner.partner_code
-        )
-      ) {
-        try {
-          flightPreviews = await fetchFlightPreviews(partner.partner_code);
-        } catch (e) {
-          console.warn("⚠️ flight preview fetch error:", e.message);
-        }
-      }
-
-      let mappings = [];
-
-      // If fallbackCities provided → ONLY use those city_slugs, ignore partner_mappings
-      if (fallbackCities.length > 0) {
-        const { code: defaultOriginCode, city: defaultOriginCity } = getFallbackOrigin();
-        mappings = fallbackCities.map((slug) => ({
-          id: null,
-          city_slug: slug,
-          country_slug: null,
-          destination_city: slug,
-          origin_code: req_origin_code || defaultOriginCode,
-          origin_city: req_origin_city || defaultOriginCity,
-        }));
-
-        console.log(
-          `⚙️ Using fallbackCities for ${partner.partner_code}: ${fallbackCities.join(", ")} (origin: ${req_origin_code || defaultOriginCode}/${req_origin_city || defaultOriginCity})`
-        );
-      } else {
-        mappings = await getPartnerMappings(partner.partner_code);
-      }
-
-      const sliced = limit > 0 ? mappings.slice(0, limit) : mappings;
-
-      for (const mappingRow of sliced) {
-        const mapping = { ...mappingRow };
-        const destination_slug = mapping.city_slug || mapping.country_slug || "none";
-
-        // 🧭 Airport enrichment
-        try {
-          const isFallbackCity = mapping.id === null;
-
-          if (!isFallbackCity) {
-            await enrichFromAirportView(mapping);
-          } else {
-            const enriched = await enrichFromAirportView({ ...mapping });
-
-            mapping.destination_code = mapping.destination_code || enriched.destination_code;
-            mapping.iata_code = mapping.iata_code || enriched.iata_code;
-            mapping.country_slug = mapping.country_slug || enriched.country_slug;
-            mapping.country_code = mapping.country_code || enriched.country_code;
-          }
-        } catch (e) {
-          console.warn(`✈️ Airport enrichment skipped for ${mapping.city_slug}:`, e.message);
-        }
-
-        // 🌍 TripAdvisor GEO enrichment (unified)
-        if (partner.partner_code.startsWith("tripadvisor_")) {
-          ensureTripadvisorGeoId(mapping);
-
-          const geo = await resolveTripAdvisorGeo(
-            mapping.city_slug,
-            mapping.country_slug
-          );
-
-          if (geo) {
-            mapping.geo_id = geo.geo_id;
-            mapping.prefixed_geo_id = geo.prefixed;
-            mapping.country_code = mapping.country_code || geo.country_code;
-          } else {
-            console.warn(`⚠️ TripAdvisor geo unresolved for ${mapping.city_slug}`);
-          }
-        }
-
-        try {
-          // 🛫 Origin fallback from flight previews
-          if (
-            ["aviasales", "expedia_flights", "booking_kayak", "cheapoair"].includes(
-              partner.partner_code
-            )
-          ) {
-            if (!mapping.origin_code && flightPreviews[0]?.origin_code) {
-              mapping.origin_code = flightPreviews[0].origin_code;
-            }
-            if (!mapping.origin_city && flightPreviews[0]?.origin_city) {
-              mapping.origin_city = normalizePlaceName(flightPreviews[0].origin_city);
-            }
-          }
-
-          // Normalize origin & destination fields
-          if (mapping.origin_city) {
-            mapping.origin_city = normalizePlaceName(mapping.origin_city);
-            mapping.origin = mapping.origin || mapping.origin_city;
-          } else if (req_origin_city) {
-            mapping.origin_city = normalizePlaceName(req_origin_city);
-            mapping.origin = mapping.origin || mapping.origin_city;
-          } else if (req_origin) {
-            mapping.origin = normalizePlaceName(req_origin);
-            mapping.origin_city = mapping.origin_city || mapping.origin;
-          } else {
-            const fb = getFallbackOrigin();
-            mapping.origin_code = mapping.origin_code || fb.code;
-            mapping.origin_city = mapping.origin_city || fb.city;
-          }
-
-          if (mapping.destination_city) {
-            mapping.destination_city = normalizePlaceName(mapping.destination_city);
-            mapping.destination = mapping.destination || mapping.destination_city;
-          } else if (mapping.city_slug) {
-            mapping.destination_city = mapping.city_slug;
-            mapping.destination = mapping.destination || mapping.destination_city;
-          }
-
-          const extras = { ...getFlightRange(), adults: 1 };
-          const context = {
-            origin_code: req_origin_code,
-            origin_city: req_origin_city ? normalizePlaceName(req_origin_city) : undefined,
-            origin: req_origin ? normalizePlaceName(req_origin) : undefined,
-          };
-
-          const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =
-  buildDeepLink(partner, mapping, extras, context);
-
-// ✅ Skip null/invalid links (for unmapped gocity/elsewhere)
-if (!deep_link) {
-  console.warn(`⚠️ Skipping ${partner.partner_code}/${destination_slug} → no valid link generated`);
-  continue;
-}
-
-          if (debug) {
-            partnerSummaries[partner.partner_code].examples.push({
-              destination_slug,
-              deep_link,
-              raw_target,
-            });
-            previewLinks.push({
-              partner: partner.partner_code,
-              destination_slug,
-              deep_link,
-              raw_target,
-            });
-            partnerSummaries[partner.partner_code].success++;
-            totalCount++;
-            console.log(`🧪 ${partner.partner_code} -> ${destination_slug}`);
-            continue;
-          }
-
-          await insertGeneratedLinkWithRetry(
-            {
-              affiliate_id: partner.affiliate_id,
-              destination_slug,
-              partner_code: partner.partner_code,
-              deep_link,
-              raw_target,
-              encoded_target,
-              base_url: partner.base_url,
-              generation_id,
-            },
-            { debug }
-          );
-
-          partnerSummaries[partner.partner_code].success++;
-          totalCount++;
-          if (partnerSummaries[partner.partner_code].examples.length < 3) {
-            partnerSummaries[partner.partner_code].examples.push({
-              destination_slug,
-              deep_link,
-            });
-          }
-          console.log(`✅ ${partner.partner_code} → ${destination_slug}`);
-        } catch (err) {
-          partnerSummaries[partner.partner_code].failed++;
-          console.error(
-            `❌ Failed for ${partner.partner_code} (${destination_slug}): ${err.message}`
-          );
-        }
-      }
-    }
-
-    await supabase
-      .from("data_generations")
-      .update({
-        completed_at: new Date().toISOString(),
-        record_count: totalCount,
-        notes: JSON.stringify({ summary: partnerSummaries, env_debug: debug }),
-      })
-      .eq("id", generation_id);
-
-    console.log("\n🎉 Done generating affiliate links.");
-    const response = {
-      message: "Affiliate links generated successfully.",
-      generation_id,
-      totalCount,
-      partnerSummaries,
-    };
-    if (debug) response.previewLinks = previewLinks.slice(0, 200);
-    return { statusCode: 200, body: JSON.stringify(response) };
-  } catch (err) {
-    console.error("❌ Fatal error:", err.message);
-    await supabase
-      .from("data_generations")
-      .update({
-        completed_at: new Date().toISOString(),
-        notes: `Batch failed: ${err.message}`,
-      })
-      .eq("id", generation_id);
-    return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
-  }
-};
-
-// ----------------------------------------------------------
-// TripAdvisor geoId fetcher (HTML-based lightweight)
-// ----------------------------------------------------------
-async function fetchTripAdvisorGeoId(citySlug) {
-  try {
-    const searchUrl = `https://www.tripadvisor.com/Search?q=${citySlug}`;
-    const res = await fetch(searchUrl);
-    const html = await res.text();
-
-    // TripAdvisor embeds: "geoId":123456
-    const match = html.match(/"geoId":(\d+)/);
-
-    if (match) return match[1];
-  } catch (e) {
-    console.warn("⚠️ TripAdvisor geoId fetch failed for", citySlug, e.message);
-  }
-  return null;
-}
-
-// ----------------------------------------------------------
-// Airport & city enrichment (via vw_airport_lookup)
-// ----------------------------------------------------------
-async function enrichFromAirportView(mapping) {
-  if (!mapping || !mapping.city_slug) return mapping;
-
-  try {
-    const { data, error } = await supabase
-      .from("vw_airport_lookup")
-      .select("iata_code, country_slug, country_code")
-      .eq("city_slug", mapping.city_slug.toLowerCase())
-      .maybeSingle();
-
-    if (error) {
-      console.warn("✈️ vw_airport_lookup fetch error:", error.message);
-      return mapping;
-    }
-
-    if (data) {
-      mapping.destination_code =
-        mapping.destination_code || data.iata_code || mapping.destination_code;
-
-      mapping.iata_code =
-        mapping.iata_code || data.iata_code || mapping.iata_code;
-
-      mapping.country_slug =
-        mapping.country_slug || data.country_slug || mapping.country_slug;
-
-      mapping.country_code =
-        mapping.country_code || data.country_code || mapping.country_code;
-    }
-  } catch (e) {
-    console.warn("✈️ enrichFromAirportView failed:", e.message);
-  }
-
-  return mapping;
 }

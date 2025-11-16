@@ -510,10 +510,8 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   ].includes(partner.partner_code);
 
   // ✅ Normalize mapping safety
-  // Do NOT force country_slug from city_slug (that caused "am", "ma" errors).
   mapping.city_slug = mapping.city_slug || mapping.country_slug || "none";
   mapping.country_slug = mapping.country_slug || ""; // leave empty if unknown
-  // Prefer explicit country_code; else try slug-based ISO; else last-resort "XX"
   mapping.country_code =
     mapping.country_code ||
     resolveIsoFromSlug(mapping.city_slug) ||
@@ -533,7 +531,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       "Cairo",
     destination_code:
       mapping.destination_code ||
-      mapping.geo_id || // for some partners
+      mapping.geo_id ||
       mapping.iata_code ||
       mapping.city_slug?.slice(0, 3).toUpperCase() ||
       "XXX",
@@ -555,7 +553,6 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       const slug = mapping.city_slug || mapping.destination_city || "";
       const countryPart = mapping.country_slug ? `,+${mapping.country_slug}` : "";
       const baseTarget = `https://www.booking.com/searchresults.html?ss=${slug}${countryPart}`;
-
       const url = rawTarget || baseTarget;
       return wrapOut(base, url);
     }
@@ -574,50 +571,44 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "gocity": {
-  // Only allow cities that exist in partner_mappings
-  if (!mapping.id) {
-    // fallback city → GoCity doesn't support → return base only
-    return wrapOut(base, base || "https://gocity.com/");
-  }
+      // ✅ Only allow mapped cities
+      if (!mapping.id) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
 
-  const url = `https://gocity.com/en/${mapping.city_slug}`;
-  return wrapOut(base, url);
-}
+      const url = `https://gocity.com/en/${mapping.city_slug}`;
+      return wrapOut(base, url);
+    }
 
     case "elsewhere": {
-  if (!mapping.id) {
-    // Not in partner_mappings → return base wrapped only
-    return wrapOut(base, base || "https://www.elsewhere.io/");
-  }
+      // ✅ Only allow mapped countries
+      if (!mapping.id) {
+        return { deep_link: null, rawTarget: null, encodedTarget: null };
+      }
 
-  const urlBase = `https://www.elsewhere.io/${mapping.country_slug}`;
-  const tracking =
-    "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate";
+      const urlBase = `https://www.elsewhere.io/${mapping.country_slug}`;
+      const tracking =
+        "?sca_ref=5103006.jxkDNNdC6D&utm_source=affiliate&utm_medium=affiliate&utm_campaign=affiliate";
+      return wrapOut(base, urlBase + tracking);
+    }
 
-  return wrapOut(base, urlBase + tracking);
-}
+    case "lonelyplanet": {
+      // ✅ Even if fallback, try generating based on city + country
+      if (!mapping.city_slug || !mapping.country_slug) {
+        return wrapOut(base, "https://www.lonelyplanet.com/");
+      }
 
-   case "lonelyplanet": {
-  // ❗ Do NOT rely on mapping.id — check city + country
-  if (!mapping.city_slug || !mapping.country_slug) {
-    // No destination → return wrapped homepage
-    return wrapOut(base, "https://www.lonelyplanet.com/");
-  }
+      const alias = {
+        baku: "baku-baki",
+      };
 
-  // Fix special city aliases
-  const alias = {
-    baku: "baku-baki",
-  };
+      const citySlug = alias[mapping.city_slug] || mapping.city_slug;
+      const countrySlug = mapping.country_slug;
 
-  const citySlug = alias[mapping.city_slug] || mapping.city_slug;
-  const countrySlug = mapping.country_slug;
+      const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
+      return wrapOut(base, target);
+    }
 
-  // Clean destination URL
-  const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
-
-  return wrapOut(base, target);
-}
-      
     case "aviasales": {
       const iataMap = {
         "cape-town": "CPT",
@@ -673,34 +664,33 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "booking_kayak": {
-  const originIata = (mapping.origin_code || context.origin_code || "LON")
-    .slice(0, 3)
-    .toUpperCase();
+      const originIata = (mapping.origin_code || context.origin_code || "LON")
+        .slice(0, 3)
+        .toUpperCase();
 
-  const iataMap = {
-    "cape-town": "CPT",
-    reykjavik: "REK",
-    berlin: "BER",
-    madrid: "MAD",
-    amsterdam: "AMS",
-    baku: "GYD",
-  };
+      const iataMap = {
+        "cape-town": "CPT",
+        reykjavik: "REK",
+        berlin: "BER",
+        madrid: "MAD",
+        amsterdam: "AMS",
+        baku: "GYD",
+      };
 
-  const destIata =
-    iataMap[mapping.city_slug?.toLowerCase()] ||
-    mapping.iata_code ||
-    resolveIataFromSlug(mapping.city_slug) ||
-    (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
+      const destIata =
+        iataMap[mapping.city_slug?.toLowerCase()] ||
+        mapping.iata_code ||
+        resolveIataFromSlug(mapping.city_slug) ||
+        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
-  const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
+      const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${extras.depart_yyyy_mm_dd}/${extras.return_yyyy_mm_dd}`;
 
-  // ❗ Kayak forbids affiliate redirect wrapping → return direct
-  return {
-    deep_link: url,
-    rawTarget: url,
-    encodedTarget: encodeURIComponent(url),
-  };
-}
+      return {
+        deep_link: url,
+        rawTarget: url,
+        encodedTarget: encodeURIComponent(url),
+      };
+    }
 
     case "tripadvisor_attractions":
     case "tripadvisor_hotels":
@@ -711,38 +701,30 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       let url;
 
       if (!mapping.prefixed_geo_id) {
-        // No geoId yet → still use category URLs without geo segment
         switch (type) {
           case "attractions":
             url = `https://www.tripadvisor.com/Attractions--Activities-${slug}.html`;
             break;
-
           case "hotels":
             url = `https://www.tripadvisor.com/Hotels--${slug}-Hotels.html`;
             break;
-
           case "restaurants":
             url = `https://www.tripadvisor.com/Restaurants--${slug}.html`;
             break;
-
           default:
             url = `https://www.tripadvisor.com/Search?q=${slug}`;
         }
       } else {
-        // Normal geo-based URLs
         switch (type) {
           case "attractions":
             url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${slug}.html`;
             break;
-
           case "hotels":
             url = `https://www.tripadvisor.com/Hotels-${mapping.prefixed_geo_id}-Hotels-${slug}.html`;
             break;
-
           case "restaurants":
             url = `https://www.tripadvisor.com/Restaurants-${mapping.prefixed_geo_id}-${slug}.html`;
             break;
-
           default:
             url = `https://www.tripadvisor.com/Search?q=${slug}`;
         }
@@ -764,7 +746,6 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, rawTarget || template || base);
   }
 
-  // Helper: wrap target for TP or direct
   function wrapOut(b, target) {
     const encoded = encodeURIComponent(target);
     const deep_link = wrapTpLink(b, target);

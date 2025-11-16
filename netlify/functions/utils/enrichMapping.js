@@ -5,7 +5,7 @@
  * - Airport/IATA/ISO fallback (vw_airport_lookup + static maps)
  * - TripAdvisor geoId resolver (log → cache → API)
  * - Country slug normalization via iso_countries
- * - City-country overrides (for ambiguous cities: e.g., cairo → EG)
+ * - City-country overrides (disambiguation: e.g., cairo → EG + CAI)
  * - Origin defaults for flight partners
  */
 
@@ -329,7 +329,7 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.destination_city = mapping.city_slug;
   }
 
-  // 🔒 CITY OVERRIDE FIRST (fixes Cairo ambiguity)
+  // 🔒 CITY OVERRIDE FIRST (fix Cairo ambiguity to Egypt)
   const cityA2 = CITY_COUNTRY_A2[mapping.city_slug?.toLowerCase()];
   if (cityA2) {
     mapping.country_code = cityA2; // force correct ISO2
@@ -354,20 +354,17 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
 
   // 🌍 Normalize country_slug to a long slug via iso_countries (never leave alpha2 in slug)
   try {
-    // If we have a trusted country_code, prefer to derive the slug from it
     if (mapping.country_code && mapping.country_code.length === 2) {
       const a2 = mapping.country_code.toUpperCase();
       const c = await getCountryByAlpha2(a2);
       mapping.country_slug = slugifyCountryName(c?.name || COUNTRY_SLUG_FROM_A2[a2] || mapping.country_slug || a2);
-      mapping.country_code = a2; // keep normalized ISO2
+      mapping.country_code = a2;
     } else if (mapping.country_slug && mapping.country_slug.length === 2) {
-      // Convert alpha2 slug → long slug
       const a2 = mapping.country_slug.toUpperCase();
       const c = await getCountryByAlpha2(a2);
       mapping.country_slug = slugifyCountryName(c?.name || COUNTRY_SLUG_FROM_A2[a2] || a2);
       mapping.country_code = c?.alpha2?.toUpperCase() || mapping.country_code;
     } else if (mapping.country_slug && mapping.country_slug.length > 2 && !mapping.country_code) {
-      // If we have a name-like slug but missing code → backfill ISO2
       const guessName = mapping.country_slug.replace(/-/g, " ");
       const c = await getCountryByName(guessName);
       if (c?.alpha2) {
@@ -377,6 +374,15 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     }
   } catch (err) {
     console.warn("country normalization warning:", err.message);
+  }
+
+  // 🛑 City-specific hard fixes (apply LAST to override any stray data)
+  if (mapping.city_slug?.toLowerCase() === "cairo") {
+    mapping.country_code = "EG";
+    mapping.country_slug = "egypt";
+    mapping.iata_code = "CAI";
+    mapping.destination_code = "CAI";
+    mapping.destination_city = "Cairo";
   }
 
   // 🌍 TripAdvisor enrichment for TA partners (LOW priority; do not override trusted)

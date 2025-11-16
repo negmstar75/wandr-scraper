@@ -951,7 +951,13 @@ exports.handler = async function (event) {
           };
 
           const { deep_link, rawTarget: raw_target, encodedTarget: encoded_target } =
-            buildDeepLink(partner, mapping, extras, context);
+  buildDeepLink(partner, mapping, extras, context);
+
+// ✅ Skip null/invalid links (for unmapped gocity/elsewhere)
+if (!deep_link) {
+  console.warn(`⚠️ Skipping ${partner.partner_code}/${destination_slug} → no valid link generated`);
+  continue;
+}
 
           if (debug) {
             partnerSummaries[partner.partner_code].examples.push({

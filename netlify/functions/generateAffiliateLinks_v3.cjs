@@ -557,18 +557,21 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
       return wrapOut(base, url);
     }
 
-    case "booking_cars":
-      return wrapOut(base, rawTarget || `https://www.booking.com/cars/index.html`);
-
     case "booking_attractions": {
-      const codeLower = (
-        mapping.country_code ||
-        resolveIsoFromSlug(mapping.city_slug) ||
-        "xx"
-      ).toLowerCase();
-      const url = `https://www.booking.com/attractions/searchresults/${codeLower}/${mapping.city_slug}.html`;
-      return wrapOut(base, url);
-    }
+  let code = mapping.country_code;
+
+  if (!code && mapping.city_slug) {
+    code = resolveIsoFromSlug(mapping.city_slug) || null;
+  }
+
+  if (!code && mapping.country_slug) {
+    code = mapping.country_slug.slice(0, 2).toUpperCase(); // try fallback from country_slug
+  }
+
+  const codeLower = (code || "xx").toLowerCase();
+  const url = `https://www.booking.com/attractions/searchresults/${codeLower}/${mapping.city_slug}.html`;
+  return wrapOut(base, url);
+}
 
     case "gocity": {
       // ✅ Only allow mapped cities
@@ -593,21 +596,25 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
     }
 
     case "lonelyplanet": {
-      // ✅ Even if fallback, try generating based on city + country
-      if (!mapping.city_slug || !mapping.country_slug) {
-        return wrapOut(base, "https://www.lonelyplanet.com/");
-      }
+  const alias = {
+    baku: "baku-baki",
+  };
 
-      const alias = {
-        baku: "baku-baki",
-      };
+  const citySlug = alias[mapping.city_slug] || mapping.city_slug;
+  let countrySlug = mapping.country_slug;
 
-      const citySlug = alias[mapping.city_slug] || mapping.city_slug;
-      const countrySlug = mapping.country_slug;
+  // Fallback: try to resolve from airport view
+  if (!countrySlug && mapping.city_slug) {
+    countrySlug = resolveCountrySlugFromCity(mapping.city_slug) || "";
+  }
 
-      const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
-      return wrapOut(base, target);
-    }
+  if (!citySlug || !countrySlug) {
+    return wrapOut(base, "https://www.lonelyplanet.com/");
+  }
+
+  const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
+  return wrapOut(base, target);
+}
 
     case "aviasales": {
       const iataMap = {

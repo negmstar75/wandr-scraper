@@ -438,6 +438,19 @@ function resolveIataFromSlug(slug) {
   return map[slug?.toLowerCase()] || null;
 }
 
+function resolveCountrySlugFromCity(citySlug) {
+  const map = {
+    cairo: "egypt",
+    madrid: "spain",
+    berlin: "germany",
+    amsterdam: "netherlands",
+    "cape-town": "south-africa",
+    baku: "azerbaijan",
+    reykjavik: "iceland",
+  };
+  return map[citySlug?.toLowerCase()] || null;
+}
+
 // ----------------------------------------------------------
 // DB insert/upsert
 // ----------------------------------------------------------

@@ -208,10 +208,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
         iataMap[mapping.city_slug?.toLowerCase()] ||
         mapping.iata_code ||
         resolveIataFromSlug(mapping.city_slug) ||
-        mapping.city_slug?.slice(0, 3).toUpperCase() ||
-        "XXX";
+        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
       const url = `https://www.cheapoair.com/air/listing?&d1=${originIata}&r1=${destIata}&dt1=${extras.depart_mm_dd_yyyy}&dtype1=A&rtype1=A&d2=${destIata}&r2=${originIata}&dt2=${extras.return_mm_dd_yyyy}&dtype2=A&rtype2=A&tripType=ROUNDTRIP`;
+
       return wrapOut(base, url);
     }
 

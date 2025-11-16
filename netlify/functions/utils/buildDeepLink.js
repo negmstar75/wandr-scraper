@@ -57,6 +57,23 @@ function titleCase(s) {
     .join(" ");
 }
 
+function appendParamsFromBaseToTarget(baseUrl, targetUrl) {
+  if (!baseUrl) return targetUrl;
+  const base = new URL(baseUrl);
+  const target = new URL(targetUrl);
+
+  // copy all params except "u"
+  base.searchParams.forEach((val, key) => {
+    if (key.toLowerCase() === "u") return;
+    // do not overwrite if already present
+    if (!target.searchParams.has(key)) {
+      target.searchParams.set(key, val);
+    }
+  });
+
+  return target.toString();
+}
+
 function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
   if (!template) return "";
 
@@ -252,22 +269,27 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "lonelyplanet": {
-      // Needs both city + full country slug (never alpha2)
-      const alias = { baku: "baku-baki" };
-      const citySlug = alias[mapping.city_slug] || mapping.city_slug;
+  // Needs both city + full country slug (never alpha2)
+  const alias = { baku: "baku-baki" };
+  const citySlug = alias[mapping.city_slug] || mapping.city_slug;
 
-      let countrySlug = mapping.country_slug || resolveCountrySlugFromCity(mapping.city_slug) || "";
-      if (countrySlug && countrySlug.length === 2) {
-        countrySlug = COUNTRY_SLUG_FROM_A2[countrySlug.toUpperCase()] || countrySlug;
-      }
+  let countrySlug = mapping.country_slug || resolveCountrySlugFromCity(mapping.city_slug) || "";
+  if (countrySlug && countrySlug.length === 2) {
+    countrySlug = COUNTRY_SLUG_FROM_A2[countrySlug.toUpperCase()] || countrySlug;
+  }
 
-      if (!citySlug || !countrySlug || countrySlug.length <= 2) {
-        return wrapOut(base, "https://www.lonelyplanet.com/");
-      }
+  if (!citySlug || !countrySlug || countrySlug.length <= 2) {
+    // still pass affiliate params directly to homepage, not via &u=
+    const homepage = "https://www.lonelyplanet.com/";
+    const decorated = appendParamsFromBaseToTarget(base, homepage);
+    return { deep_link: decorated, rawTarget: decorated, encodedTarget: encodeURIComponent(decorated) };
+  }
 
-      const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
-      return wrapOut(base, target);
-    }
+  const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
+  // ⛔ Do NOT wrap with &u=. Append affiliate/utm params directly to target.
+  const decorated = appendParamsFromBaseToTarget(base, target);
+  return { deep_link: decorated, rawTarget: decorated, encodedTarget: encodeURIComponent(decorated) };
+}
 
     case "aviasales": {
       if (!resolved.destination_code) {

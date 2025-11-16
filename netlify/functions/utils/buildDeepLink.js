@@ -174,8 +174,7 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
         iataMap[mapping.city_slug?.toLowerCase()] ||
         mapping.iata_code ||
         resolveIataFromSlug(mapping.city_slug) ||
-        mapping.city_slug?.slice(0, 3).toUpperCase() ||
-        "XXX";
+        (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
       destIata = destIata.toUpperCase().substring(0, 3);
 
@@ -186,9 +185,10 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
         "LON";
 
       const flightPath = `${originFinal}${extras.depart_ddmm}${destIata}${extras.return_ddmm}1`;
-      const url = `https://www.aviasales.com/search/${flightPath}`;
-      return wrapOut(base, url);
+      const aviasalesUrl = `https://www.aviasales.com/search/${flightPath}`;
+      return wrapOut(base, aviasalesUrl);
     }
+
 
     case "cheapoair": {
       const originIata = (mapping.origin_code || context.origin_code || "LON")

@@ -597,24 +597,24 @@ function buildDeepLink(partner, mapping, extras, context = {}) {
   return wrapOut(base, urlBase + tracking);
 }
 
-    case "lonelyplanet": {
-  // Unsupported dest → return base only
-  if (!mapping.id) {
+   case "lonelyplanet": {
+  // ❗ Do NOT rely on mapping.id — check city + country
+  if (!mapping.city_slug || !mapping.country_slug) {
+    // No destination → return wrapped homepage
     return wrapOut(base, "https://www.lonelyplanet.com/");
   }
 
-  // City aliases
+  // Fix special city aliases
   const alias = {
     baku: "baku-baki",
   };
 
-  const country = mapping.country_slug;
-  const city = alias[mapping.city_slug] || mapping.city_slug;
+  const citySlug = alias[mapping.city_slug] || mapping.city_slug;
+  const countrySlug = mapping.country_slug;
 
-  // IMPORTANT: raw target must NOT include sca_ref parameters
-  const target = `https://www.lonelyplanet.com/destinations/${country}/${city}`;
+  // Clean destination URL
+  const target = `https://www.lonelyplanet.com/destinations/${countrySlug}/${citySlug}`;
 
-  // Now wrap it cleanly
   return wrapOut(base, target);
 }
       

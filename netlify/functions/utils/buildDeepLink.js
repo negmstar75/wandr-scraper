@@ -3,9 +3,9 @@
  * ----------------------------------------------------------
  * Deep-link builder for all partners.
  * - No fake IATA slicing (prevents "CIR")
- * - Keeps robust dates defaults
+ * - Trims target URL before encoding (fixes stray spaces)
  * - Correct TA / LP structures
- * - Expedia Flights explicit format (your known-good link)
+ * - Expedia Flights explicit format (known-good)
  */
 
 function pad(n) {
@@ -93,7 +93,8 @@ function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
 
 function wrapTpLink(baseUrl, targetUrl) {
   if (!baseUrl) return targetUrl;
-  const encodedTarget = encodeURIComponent(targetUrl);
+  const targetClean = String(targetUrl || "").trim(); // 👈 trim to remove stray spaces
+  const encodedTarget = encodeURIComponent(targetClean);
   if (/[?&]u=/.test(baseUrl)) {
     return baseUrl.replace(/([?&]u=)([^&]*)/, `$1${encodedTarget}`);
   }
@@ -180,10 +181,18 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
   mapping.country_code = mapping.country_code || resolveIsoFromSlug(mapping.city_slug) || "XX";
 
   // Compute dependable IATA (no slicing fallback)
-  const resolvedDestIata =
+  let resolvedDestIata =
     (mapping.destination_code && String(mapping.destination_code).toUpperCase()) ||
     (mapping.iata_code && String(mapping.iata_code).toUpperCase()) ||
     (resolveIataFromSlug(mapping.city_slug) || null);
+
+  // 👮 Final sanity for Cairo → CAI (avoids CIR)
+  if (
+    mapping.city_slug?.toLowerCase() === "cairo" &&
+    (mapping.country_code?.toUpperCase() === "EG" || mapping.country_slug === "egypt")
+  ) {
+    resolvedDestIata = "CAI";
+  }
 
   const resolved = {
     origin_code:
@@ -252,7 +261,6 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
         countrySlug = COUNTRY_SLUG_FROM_A2[countrySlug.toUpperCase()] || countrySlug;
       }
 
-      // If still missing or alpha-like -> fail to homepage
       if (!citySlug || !countrySlug || countrySlug.length <= 2) {
         return wrapOut(base, "https://www.lonelyplanet.com/");
       }
@@ -262,7 +270,6 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "aviasales": {
-      // Require a valid destination IATA; if absent, skip link
       if (!resolved.destination_code) {
         return { deep_link: null, rawTarget: null, encodedTarget: null };
       }
@@ -280,13 +287,20 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "expedia_flights": {
-      // Build “known-good” format with readable labels
       if (!resolved.destination_code) {
         return { deep_link: null, rawTarget: null, encodedTarget: null };
       }
-      const originIata = resolved.origin_code; // e.g., LON
-      const destIata = resolved.destination_code; // e.g., CAI
 
+      // 👮 Cairo sanity again at builder level
+      let destIata = resolved.destination_code;
+      if (
+        mapping.city_slug?.toLowerCase() === "cairo" &&
+        (mapping.country_code?.toUpperCase() === "EG" || mapping.country_slug === "egypt")
+      ) {
+        destIata = "CAI";
+      }
+
+      const originIata = resolved.origin_code; // e.g., LON
       const originCity = titleCase(mapping.origin_city || "London");
       const destCity = titleCase(mapping.destination_city || mapping.city_slug || "Destination");
 
@@ -369,9 +383,10 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
   }
 
   function wrapOut(b, target) {
-    const encoded = encodeURIComponent(target);
-    const deep_link = wrapTpLink(b, target);
-    return { deep_link, rawTarget: target, encodedTarget: encoded };
+    const targetClean = String(target || "").trim(); // 👈 ensure trimmed
+    const encoded = encodeURIComponent(targetClean);
+    const deep_link = wrapTpLink(b, targetClean);
+    return { deep_link, rawTarget: targetClean, encodedTarget: encoded };
   }
 }
 

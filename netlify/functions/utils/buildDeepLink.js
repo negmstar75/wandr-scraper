@@ -2,15 +2,12 @@
  * utils/buildDeepLink.js
  * ----------------------------------------------------------
  * Deep-link builder for all partners.
- * - Self-contained: includes template substitution, TP wrapper, date helpers
- * - Robust flight defaults if caller doesn't pass dates (prevents "undefined")
- * - Strong IATA derivation (prevents "CIR" or other wrong codes)
- * - Correct TripAdvisor / Lonely Planet link formats
+ * - Robust flight defaults (never "undefined" dates)
+ * - Strong IATA derivation (prevents "CIR" etc.)
+ * - Correct TripAdvisor / Lonely Planet formats
+ * - Expedia Flights explicit builder (matches your known-good format)
  */
 
-//
-// ✨ Minimal-safe helpers (self-contained)
-//
 function pad(n) {
   return String(n).padStart(2, "0");
 }
@@ -49,6 +46,15 @@ function getFlightRange() {
 function safeVal(v) {
   if (v === undefined || v === null) return "";
   return String(v);
+}
+
+function titleCase(s) {
+  if (!s) return s;
+  return s
+    .toString()
+    .split(/[\s-]+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
 }
 
 function applyTemplate(template = "", mapping = {}, extras = {}, context = {}) {
@@ -97,7 +103,7 @@ function wrapTpLink(baseUrl, targetUrl) {
 }
 
 // ----------------------------------------------------------
-// ✈️ Fallback resolvers (local, to avoid cross-module deps)
+// ✈️ Local fallback resolvers (to avoid cross-module deps)
 // ----------------------------------------------------------
 function resolveIsoFromSlug(slug) {
   const map = {
@@ -139,7 +145,7 @@ function resolveCountrySlugFromCity(citySlug) {
 }
 
 // ----------------------------------------------------------
-// 🔗 Core deep link builder (exported)
+// 🔗 Core deep link builder
 // ----------------------------------------------------------
 function buildDeepLink(partner, mapping, extras = {}, context = {}) {
   const base = partner.base_url || "";
@@ -151,7 +157,7 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     "cheapoair",
   ].includes(partner.partner_code);
 
-  // ✅ Ensure flight dates always exist (prevents "undefined")
+  // ✅ Ensure flight dates always exist
   const flightDefaults = getFlightRange();
   const e = { adults: 1, ...flightDefaults, ...extras };
 
@@ -174,13 +180,11 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
       "London",
 
     destination_code: (() => {
-      // Prefer explicit mapping codes
       let code =
         mapping.destination_code ||
         mapping.iata_code ||
         resolveIataFromSlug(mapping.city_slug) ||
         (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
-      // Strictly enforce 3-letter IATA
       code = code.toString().toUpperCase().slice(0, 3);
       return code;
     })(),
@@ -192,12 +196,10 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     resolved.origin_code = "LON";
   }
 
-  // Build from template or override
   const rawTarget = mapping.override_url
     ? applyTemplate(mapping.override_url, mapping, e, resolved)
     : applyTemplate(template, mapping, e, resolved);
 
-  // Partner-specific logic
   switch (partner.partner_code) {
     case "booking_stays": {
       const slug = mapping.city_slug || mapping.destination_city || "";
@@ -208,24 +210,21 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "booking_attractions": {
-      // Needs 2-letter ISO (lowercase path)
+      // Requires ISO2 lowercase in path
       let code = mapping.country_code;
       if (!code && mapping.city_slug) code = resolveIsoFromSlug(mapping.city_slug);
-      if (!code && mapping.country_slug) code = mapping.country_slug.slice(0, 2).toUpperCase();
       const codeLower = (code || "XX").toLowerCase();
       const url = `https://www.booking.com/attractions/searchresults/${codeLower}/${mapping.city_slug}.html`;
       return wrapOut(base, url);
     }
 
     case "gocity": {
-      // Only allow mapped cities
       if (!mapping.id) return { deep_link: null, rawTarget: null, encodedTarget: null };
       const url = `https://gocity.com/en/${mapping.city_slug}`;
       return wrapOut(base, url);
     }
 
     case "elsewhere": {
-      // Only allow mapped countries
       if (!mapping.id) return { deep_link: null, rawTarget: null, encodedTarget: null };
       const urlBase = `https://www.elsewhere.io/${mapping.country_slug}`;
       const tracking =
@@ -234,12 +233,19 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     case "lonelyplanet": {
-      // Requires BOTH city + country
+      // Needs both city + full country slug
       const alias = { baku: "baku-baki" };
       const citySlug = alias[mapping.city_slug] || mapping.city_slug;
       let countrySlug = mapping.country_slug || resolveCountrySlugFromCity(mapping.city_slug) || "";
 
-      if (!citySlug || !countrySlug) {
+      // Defensive: if still alpha2, degrade to 'country' (avoid 'us' paths)
+      if (countrySlug && countrySlug.length === 2) {
+        // last-resort map for common cases
+        const a2map = { eg: "egypt", us: "united-states", gb: "united-kingdom", nl: "netherlands", de: "germany", es: "spain" };
+        countrySlug = a2map[countrySlug.toLowerCase()] || countrySlug;
+      }
+
+      if (!citySlug || !countrySlug || countrySlug.length <= 2) {
         return wrapOut(base, "https://www.lonelyplanet.com/");
       }
 
@@ -297,26 +303,44 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
       return wrapOut(base, url);
     }
 
+    case "expedia_flights": {
+      // Match your known-good format with rich labels
+      const originIata = resolved.origin_code; // e.g., LON
+      const destIata =
+        (mapping.iata_code || resolveIataFromSlug(mapping.city_slug) || "XXX")
+          .toString().toUpperCase().slice(0, 3);
+
+      const originCity = titleCase(mapping.origin_city || "London");
+      const destCity = titleCase(mapping.destination_city || mapping.city_slug || "Destination");
+
+      const originLabel =
+        originIata === "LON" ? `${originCity} (LON-All Airports)` : `${originCity} (${originIata})`;
+      // Known special for Cairo
+      const destinationLabel =
+        destIata === "CAI" ? `${destCity} (CAI - Cairo Intl.)` : `${destCity} (${destIata})`;
+
+      // Dates already formatted in e.*
+      const url =
+        `https://www.expedia.com/Flights-Search?` +
+        `leg1=from:${encodeURIComponent(originLabel)},to:${encodeURIComponent(destinationLabel)},departure:${encodeURIComponent(e.depart_mm_dd_yyyy)}TANYT,fromType:U,toType:U` +
+        `&leg2=from:${encodeURIComponent(destinationLabel)},to:${encodeURIComponent(originLabel)},departure:${encodeURIComponent(e.return_mm_dd_yyyy)}TANYT,fromType:U,toType:U` +
+        `&mode=search` +
+        `&options=${encodeURIComponent("carrier:,cabinclass:,maxhops:1,nopenalty:N")}` +
+        `&pageId=0` +
+        `&passengers=${encodeURIComponent("adults:1,children:0,infantinlap:N")}` +
+        `&trip=roundtrip`;
+
+      return wrapOut(base, url);
+    }
+
     case "booking_kayak": {
       const originIata = resolved.origin_code;
-      const iataMap = {
-        "cape-town": "CPT",
-        reykjavik: "REK",
-        berlin: "BER",
-        madrid: "MAD",
-        amsterdam: "AMS",
-        baku: "GYD",
-        cairo: "CAI",
-      };
-
       let destIata =
-        iataMap[mapping.city_slug?.toLowerCase()] ||
         mapping.iata_code ||
         resolveIataFromSlug(mapping.city_slug) ||
         (mapping.city_slug ? mapping.city_slug.slice(0, 3).toUpperCase() : "XXX");
 
       destIata = destIata.toUpperCase().substring(0, 3);
-
       const url = `https://booking.kayak.com/flights/${originIata}-${destIata}/${e.depart_yyyy_mm_dd}/${e.return_yyyy_mm_dd}`;
       return { deep_link: url, rawTarget: url, encodedTarget: encodeURIComponent(url) };
     }
@@ -329,7 +353,6 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
 
       let url;
       if (!mapping.prefixed_geo_id) {
-        // Fallback (no geo id found)
         switch (type) {
           case "attractions":
             url = `https://www.tripadvisor.com/Attractions--Activities-${slug}.html`;
@@ -344,7 +367,6 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
             url = `https://www.tripadvisor.com/Search?q=${slug}`;
         }
       } else {
-        // Correct geo-based URLs
         switch (type) {
           case "attractions":
             url = `https://www.tripadvisor.com/Attractions-${mapping.prefixed_geo_id}-Activities-${slug}.html`;
@@ -371,7 +393,6 @@ function buildDeepLink(partner, mapping, extras = {}, context = {}) {
     }
 
     default:
-      // default to template/base passthrough
       return wrapOut(base, rawTarget || template || base);
   }
 

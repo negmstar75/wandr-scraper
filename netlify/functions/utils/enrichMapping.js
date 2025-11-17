@@ -2,10 +2,11 @@
  * utils/enrichMapping.js
  * ----------------------------------------------------------
  * Centralized enrichment pipeline for destination mappings.
+ * - Fast checkpoint: city_country_overrides (feature-flagged)
  * - Airport/IATA/ISO fallback (vw_airport_lookup + static maps)
  * - TripAdvisor geoId resolver (log → cache → API)
  * - Country slug normalization via iso_countries
- * - City-country overrides (disambiguation: e.g., cairo → EG + CAI)
+ * - Static city-country hints (e.g., cairo → EG) as fallback
  * - Origin defaults for flight partners
  */
 
@@ -15,6 +16,12 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// ----------------------------------------------------------
+// 🔧 Feature flag: USE_CITY_OVERRIDES (default: true)
+// ----------------------------------------------------------
+const useOverrides =
+  String(process.env.USE_CITY_OVERRIDES ?? "true").toLowerCase() === "true";
 
 // ----------------------------------------------------------
 // 🧰 Small utils
@@ -72,8 +79,7 @@ function resolveCountrySlugFromCity(citySlug) {
 }
 
 // ----------------------------------------------------------
-// 🧷 City → Country ISO2 overrides (disambiguation)
-// (Highest priority: if city is known, force the right country)
+// 🧷 Static city → ISO2 hints (fallback if DB override is off/missing)
 // ----------------------------------------------------------
 const CITY_COUNTRY_A2 = {
   cairo: "EG",
@@ -160,6 +166,7 @@ async function getCountryByAlpha2(alpha2) {
     .select("name, alpha2")
     .eq("alpha2", alpha2.toUpperCase())
     .limit(1);
+
   if (error) {
     console.warn("iso_countries alpha2 lookup error:", error.message);
     return null;
@@ -169,7 +176,7 @@ async function getCountryByAlpha2(alpha2) {
 
 async function getCountryByName(name) {
   if (!name) return null;
-  // Try exact first, then ilike
+
   let { data, error } = await supabase
     .from("iso_countries")
     .select("name, alpha2")
@@ -316,6 +323,29 @@ async function resolveTripAdvisorGeo(citySlug, countrySlug = null) {
 }
 
 // ----------------------------------------------------------
+// 🔎 DB override: city_country_overrides (early checkpoint)
+// ----------------------------------------------------------
+async function getCityCountryOverride(citySlug) {
+  if (!citySlug) return null;
+  try {
+    const { data, error } = await supabase
+      .from("city_country_overrides")
+      .select("city_slug, country_slug, iso2, iata_code, notes")
+      .eq("city_slug", citySlug.toLowerCase())
+      .maybeSingle();
+
+    if (error) {
+      console.warn("city_country_overrides lookup error:", error.message);
+      return null;
+    }
+    return data || null;
+  } catch (err) {
+    console.warn("city_country_overrides exception:", err.message);
+    return null;
+  }
+}
+
+// ----------------------------------------------------------
 // 🧠 Unified enrichment orchestrator
 // ----------------------------------------------------------
 async function enrichMapping(mapping, { partner_code = "", originFallback = {} } = {}) {
@@ -329,13 +359,27 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.destination_city = mapping.city_slug;
   }
 
-  // 🔒 CITY OVERRIDE FIRST (fix Cairo ambiguity to Egypt)
-  const cityA2 = CITY_COUNTRY_A2[mapping.city_slug?.toLowerCase()];
-  if (cityA2) {
-    mapping.country_code = cityA2; // force correct ISO2
+  // ✅ 1) EARLY CHECKPOINT: city_country_overrides (feature-flagged)
+  if (useOverrides && mapping.city_slug) {
+    const override = await getCityCountryOverride(mapping.city_slug);
+    if (override) {
+      // Force the correct country + IATA for ambiguous cities
+      mapping.country_slug ||= override.country_slug; // already a long-form slug in your seed
+      mapping.country_code ||= override.iso2?.toUpperCase?.();
+      if (override.iata_code) {
+        mapping.iata_code ||= override.iata_code.toUpperCase();
+        mapping.destination_code ||= override.iata_code.toUpperCase();
+      }
+    }
   }
 
-  // ✈️ Airport enrichment (trusted)
+  // 🧷 2) STATIC city → ISO2 hint (fallback if still missing)
+  if (!mapping.country_code && mapping.city_slug) {
+    const a2 = CITY_COUNTRY_A2[mapping.city_slug.toLowerCase()];
+    if (a2) mapping.country_code = a2;
+  }
+
+  // ✈️ 3) Airport enrichment (trusted)
   const isFallback = !mapping.id;
   if (!isFallback) {
     mapping = await enrichFromAirportView(mapping);
@@ -347,17 +391,19 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.country_code ||= enriched?.country_code;
   }
 
-  // 🏷 ISO/IATA/Country slug minimal fallbacks (after airport & city override)
+  // 🏷 4) ISO/IATA/Country slug minimal fallbacks (after airport & overrides)
   mapping.country_code ||= resolveIsoFromSlug(mapping.city_slug);
   mapping.iata_code ||= resolveIataFromSlug(mapping.city_slug);
   mapping.country_slug ||= resolveCountrySlugFromCity(mapping.city_slug);
 
-  // 🌍 Normalize country_slug to a long slug via iso_countries (never leave alpha2 in slug)
+  // 🌍 5) Normalize country_slug using iso_countries (never leave alpha2 in slug)
   try {
     if (mapping.country_code && mapping.country_code.length === 2) {
       const a2 = mapping.country_code.toUpperCase();
       const c = await getCountryByAlpha2(a2);
-      mapping.country_slug = slugifyCountryName(c?.name || COUNTRY_SLUG_FROM_A2[a2] || mapping.country_slug || a2);
+      mapping.country_slug = slugifyCountryName(
+        c?.name || COUNTRY_SLUG_FROM_A2[a2] || mapping.country_slug || a2
+      );
       mapping.country_code = a2;
     } else if (mapping.country_slug && mapping.country_slug.length === 2) {
       const a2 = mapping.country_slug.toUpperCase();
@@ -376,7 +422,7 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     console.warn("country normalization warning:", err.message);
   }
 
-  // 🛑 City-specific hard fixes (apply LAST to override any stray data)
+  // 🛑 6) City-specific hard fix (safety net; should be redundant with overrides)
   if (mapping.city_slug?.toLowerCase() === "cairo") {
     mapping.country_code = "EG";
     mapping.country_slug = "egypt";
@@ -385,21 +431,20 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     mapping.destination_city = "Cairo";
   }
 
-  // 🌍 TripAdvisor enrichment for TA partners (LOW priority; do not override trusted)
+  // 🌍 7) TripAdvisor enrichment for TA partners (LOW priority; do not override trusted)
   if (partner_code.startsWith("tripadvisor_")) {
     ensureTripadvisorGeoId(mapping);
     const geo = await resolveTripAdvisorGeo(mapping.city_slug, mapping.country_slug);
     if (geo) {
       mapping.geo_id = mapping.geo_id || geo.geo_id;
       mapping.prefixed_geo_id = mapping.prefixed_geo_id || geo.prefixed;
-      // DO NOT override country_code if already set by city override / airport / iso
       mapping.country_code = mapping.country_code || geo.country_code;
     } else {
       console.warn(`⚠️ TripAdvisor geo unresolved for ${mapping.city_slug}`);
     }
   }
 
-  // 🛫 Origin defaults
+  // 🛫 8) Origin defaults
   mapping.origin_code ||= originFallback.code || process.env.DEFAULT_ORIGIN_CODE || "LON";
   mapping.origin_city ||= originFallback.city || process.env.DEFAULT_ORIGIN_CITY || "London";
 

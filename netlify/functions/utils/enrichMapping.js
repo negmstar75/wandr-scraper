@@ -18,6 +18,54 @@ const supabase = createClient(
 );
 
 // ----------------------------------------------------------
+// 🔎 Destination Meta Hydrator (MV → View). Read-only, gap-filler.
+// ----------------------------------------------------------
+async function hydrateFromDestinationMeta(mapping) {
+  try {
+    const citySlug = mapping?.city_slug?.toLowerCase();
+    if (!citySlug) return mapping;
+
+    // 1) Prefer materialized view
+    let { data: mv } = await supabase
+      .from("mv_destination_meta")
+      .select("city_slug,country_code,country_slug,destination_code,lat,lon,continent,region")
+      .eq("city_slug", citySlug)
+      .maybeSingle();
+
+    let row = mv;
+
+    // 2) Fallback to live view if MV miss
+    if (!row) {
+      const res = await supabase
+        .from("vw_destination_meta")
+        .select("city_slug,country_code,country_slug,destination_code,lat,lon,continent,region")
+        .eq("city_slug", citySlug)
+        .maybeSingle();
+      row = res.data || null;
+    }
+
+    if (!row) return mapping;
+
+    // Only fill blanks — never overwrite existing trusted values
+    mapping.country_code    = mapping.country_code    || row.country_code || mapping.country_code;
+    mapping.country_slug    = mapping.country_slug    || row.country_slug || mapping.country_slug;
+    mapping.destination_code= mapping.destination_code|| row.destination_code || mapping.destination_code;
+    mapping.iata_code       = mapping.iata_code       || row.destination_code || mapping.iata_code; // mirror for flight builders
+    mapping.lat             = mapping.lat             || row.lat || mapping.lat;
+    mapping.lon             = mapping.lon             || row.lon || mapping.lon;
+
+    // Optional enrich for non-link logic
+    mapping.continent       = mapping.continent       || row.continent || mapping.continent;
+    mapping.region          = mapping.region          || row.region || mapping.region;
+
+    return mapping;
+  } catch (err) {
+    console.warn("hydrateFromDestinationMeta warning:", err.message);
+    return mapping;
+  }
+}
+
+// ----------------------------------------------------------
 // 🔧 Feature flag: USE_CITY_OVERRIDES (default: true)
 // ----------------------------------------------------------
 const useOverrides =
@@ -379,6 +427,9 @@ async function enrichMapping(mapping, { partner_code = "", originFallback = {} }
     if (a2) mapping.country_code = a2;
   }
 
+    // ✅ NEW: Prefer mv_destination_meta / vw_destination_meta to fill gaps
+  mapping = await hydrateFromDestinationMeta(mapping);
+  
   // ✈️ 3) Airport enrichment (trusted)
   const isFallback = !mapping.id;
   if (!isFallback) {
